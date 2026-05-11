@@ -140,7 +140,12 @@ function serverSettingsUpdate(data){
     timeSeqTimes = chase_config.time_seq_times;
     $('#timeSeqActiveTime').val(timeSeqActive.toFixed(0));
     $('#timeSeqCycleTime').val(timeSeqCycle.toFixed(0));
+    $('#timeSeqActiveTime').val(timeSeqActive.toFixed(0));
+    $('#timeSeqCycleTime').val(timeSeqCycle.toFixed(0));
     updateTimeSeqStatus();
+    if (timeSeqEnabled == true || timeSeqTimes.some(function (t) { return t > 0; })){
+        refreshServerTime();
+    }
     if (timeSeqEnabled == true || timeSeqTimes.some(function (t) { return t > 0; })){
         refreshServerTime();
     }

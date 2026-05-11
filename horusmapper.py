@@ -345,6 +345,21 @@ def sync_bearing_store_time_seq():
     )
 
 
+def sync_bearing_store_time_seq():
+    """Keep the bearing handler aligned with server-authoritative time-sequence settings."""
+    global bearing_store, chasemapper_config
+
+    if bearing_store is None:
+        return
+
+    bearing_store.update_time_sequence(
+        enabled=chasemapper_config["time_seq_enabled"],
+        times=chasemapper_config["time_seq_times"],
+        active=chasemapper_config["time_seq_active"],
+        cycle=chasemapper_config["time_seq_cycle"],
+    )
+
+
 @socketio.on("client_settings_update", namespace="/chasemapper")
 def client_settings_update(data):
     global chasemapper_config, online_uploader
