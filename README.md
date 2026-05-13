@@ -11,7 +11,7 @@ CHASE is reworked into being used for the UMD BPP, with the following features:
 * MD Parcel information for contacting land owners
 * Live Standard/GHOUL Landing Prediction + tracking!
 
-NOTE: This package was designed to be in tandom of the [current prediction website] (https://bpp.umd.edu/develop/predicts/), not as a replacement. The thought being the program uses the prediction website leading up to a launch and CHASE the day of the launch. After five years of participating in HAB launches and research, I was tired of swapping between several apps and websites and message threads to retreive tracking information and then spending more time than needed typing in coordinates to landing sites and trying to figure out many more logistics. 
+NOTE: This package was designed to be in tandom of the [current prediction website](https://bpp.umd.edu/develop/predicts/), not as a replacement. The thought being the program uses the prediction website leading up to a launch and CHASE the day of the launch. After five years of participating in HAB launches and research, I was tired of swapping between several apps and websites and message threads to retreive tracking information and then spending more time than needed typing in coordinates to landing sites and trying to figure out many more logistics. 
 
 This was done out of a labour of love and hopefully will be useful for the future of this and many other programs!
 
