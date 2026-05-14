@@ -99,7 +99,8 @@ def parse_kml_geofence(kml_bytes):
     try:
         root = ET.fromstring(kml_bytes)
     except ET.ParseError as e:
-        raise GeofenceParseError("Invalid XML: %s" % e)
+        logging.debug("KML parse error: %s", e)
+        raise GeofenceParseError("Invalid XML: could not parse document.")
 
     # Find every Placemark, then pick one that contains a Polygon. If
     # there are several, prefer the one named "Geofence" (case

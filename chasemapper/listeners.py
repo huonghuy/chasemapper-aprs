@@ -127,7 +127,8 @@ class UDPListener(object):
             self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         except:
             pass
-        self.s.bind(("", self.udp_port))
+        # Bind to all interfaces so we receive UDP broadcasts from other local processes.
+        self.s.bind(("0.0.0.0", self.udp_port))
         print("Started UDP Listener Thread.")
         self.udp_listener_running = True
 

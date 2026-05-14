@@ -59,7 +59,7 @@ def send_bearing(json_data, udp_port=55672, hostname='<broadcast>'):
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     except:
         pass
-    s.bind(('',udp_port))
+
     try:
         s.sendto(json.dumps(packet).encode('ascii'), (hostname, udp_port))
     except socket.error as e:
@@ -107,7 +107,7 @@ def send_car_position(json_data, udp_port=55672):
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     except:
         pass
-    s.bind(('',udp_port))
+
     try:
         s.sendto(json.dumps(packet).encode('ascii'), ('<broadcast>', udp_port))
     except socket.error:
@@ -150,7 +150,7 @@ def send_balloon_telemetry(json_data, udp_port=55672):
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     except:
         pass
-    s.bind(('',udp_port))
+
     try:
         s.sendto(json.dumps(packet).encode('ascii'), ('<broadcast>', udp_port))
     except socket.error:

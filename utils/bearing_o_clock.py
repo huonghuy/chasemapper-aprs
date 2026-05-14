@@ -41,7 +41,7 @@ def send_relative_bearing(bearing, source, heading_override=False, udp_port=5567
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     except:
         pass
-    s.bind(('',udp_port))
+
     try:
         s.sendto(json.dumps(packet).encode('ascii'), ('<broadcast>', udp_port))
     except socket.error:
