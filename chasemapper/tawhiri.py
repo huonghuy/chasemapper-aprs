@@ -87,7 +87,13 @@ def get_tawhiri_prediction(
     if dataset:
         _params["dataset"] = dataset
 
-    logging.debug("Tawhiri - Requesting prediction using parameters: %s" % str(_params))
+    logging.debug(
+        "Tawhiri - Requesting prediction: profile=%s launch_datetime=%s ascent_rate=%s burst_altitude=%s",
+        _params.get("profile"),
+        _params.get("launch_datetime"),
+        _params.get("ascent_rate"),
+        _params.get("burst_altitude"),
+    )
 
     try:
         _r = requests.get(TAWHIRI_API_URL, params=_params, timeout=timeout)

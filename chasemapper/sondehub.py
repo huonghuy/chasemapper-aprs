@@ -182,7 +182,10 @@ class SondehubChaseUploader(object):
                 "Sondehub - Chase-car position upload failed after %d retries"
                 % (_retries)
             )
-            logging.debug(f"Attempted to upload {json.dumps(_position)}")
+            logging.debug(
+                "Sondehub - Attempted to upload position for callsign=%s",
+                _position.get("uploader_callsign"),
+            )
 
 
     def mark_payload_recovered(self, serial=None, callsign=None, lat=0.0, lon=0.0, alt=0.0, message="", recovered=True):

@@ -24,7 +24,6 @@ def send_packet(packet, udp_port=55672):
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     except Exception:
         pass
-    s.bind(("", udp_port))
 
     data = json.dumps(packet).encode("ascii")
     try:

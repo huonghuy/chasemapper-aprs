@@ -170,8 +170,10 @@ class APRSISListener:
         lon = packet.get("longitude")
 
         logging.info(
-            "APRS-IS packet: from=%s lat=%s lon=%s | balloon_cs=%s active_car=%s"
-            % (from_, lat, lon, self.balloon_callsigns, self.active_car_callsign)
+            "APRS-IS packet: from=%s | balloon_cs=%s active_car=%s",
+            from_,
+            self.balloon_callsigns,
+            self.active_car_callsign,
         )
 
         if lat is None or lon is None:
