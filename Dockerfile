@@ -29,13 +29,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # requirements.txt and the cusf wrapper below. Skipping this also means
 # editing python files won't bust the pip-install cache layer.
 
-# Download and install cusf_predictor_wrapper, and build predictor binary.
-ADD https://github.com/darksidelemm/cusf_predictor_wrapper/archive/master.zip \
-  /root/cusf_predictor_wrapper-master.zip
-RUN unzip /root/cusf_predictor_wrapper-master.zip -d /root && \
-  rm /root/cusf_predictor_wrapper-master.zip && \
-  mkdir -p /root/cusf_predictor_wrapper-master/src/build && \
-  cd /root/cusf_predictor_wrapper-master/src/build && \
+# Download and build cusf_predictor_wrapper. Pinned to a specific commit SHA
+# rather than `master.zip` for reproducibility, supply-chain hygiene, and
+# resilience against upstream branch renames or force-pushes. Renovate watches
+# this line (see renovate.json) and opens a PR when upstream master moves.
+# renovate: datasource=git-refs depName=cusf_predictor_wrapper packageName=https://github.com/darksidelemm/cusf_predictor_wrapper currentValue=master
+ARG CUSF_SHA=f4352834a037e3e2bf01a3fd7d5a25aa482e27c6
+ADD https://github.com/darksidelemm/cusf_predictor_wrapper/archive/${CUSF_SHA}.zip \
+  /root/cusf.zip
+RUN unzip /root/cusf.zip -d /root && \
+  rm /root/cusf.zip && \
+  mv /root/cusf_predictor_wrapper-${CUSF_SHA} /root/cusf_predictor_wrapper && \
+  mkdir -p /root/cusf_predictor_wrapper/src/build && \
+  cd /root/cusf_predictor_wrapper/src/build && \
   cmake .. && \
   make
 
@@ -81,7 +87,7 @@ COPY --from=build --chown=chasemapper:chasemapper \
 
 # Copy predictor binary from the build container.
 COPY --from=build --chown=chasemapper:chasemapper \
-  /root/cusf_predictor_wrapper-master/src/build/pred \
+  /root/cusf_predictor_wrapper/src/build/pred \
   /opt/chasemapper/
 
 # Copy in chasemapper.
