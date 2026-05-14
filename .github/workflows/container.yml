@@ -31,17 +31,6 @@ jobs:
           platform=${{ matrix.platform }}
           echo "PLATFORM=${platform//\//-}" >> $GITHUB_ENV
 
-      - name: Cache wheels
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/wheels
-          key: wheels-${{ env.PLATFORM }}-${{ github.run_id }}
-          restore-keys: |
-            wheels-${{ env.PLATFORM }}-
-
-      - name: List wheels
-        run: ls -lR ${{ github.workspace }}/wheels || true
-
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -67,19 +56,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
 
-      - name: Build stage
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          provenance: false
-          labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=local,dest=/tmp/build-output
-          cache-to: type=local,dest=/tmp/build-cache,mode=max
-          target: build
-
-      - name: Final stage and push by digest
+      - name: Build and push by digest
         id: final
         uses: docker/build-push-action@v6
         with:
@@ -88,7 +65,8 @@ jobs:
           provenance: false
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' && 'true' || 'false' }}
-          cache-from: type=local,src=/tmp/build-cache
+          cache-from: type=gha,scope=${{ env.PLATFORM }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM }}
 
       - name: Export digest
         if: ${{ github.event_name != 'pull_request' }}
@@ -105,11 +83,6 @@ jobs:
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
-
-      - name: Move and list wheels
-        run: |
-          mv -f /tmp/build-output/root/.cache/pip/wheels ${{ github.workspace }}/ || true
-          ls -lR ${{ github.workspace }}/wheels || true
 
   merge:
     name: Publish multi-platform image
