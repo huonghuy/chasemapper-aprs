@@ -74,23 +74,27 @@ RUN apt-get update && \
 RUN useradd -r -u 1000 -m -s /bin/false chasemapper
 
 # Copy any additional Python packages from the build container.
-COPY --from=build /root/.local /home/chasemapper/.local
+# --chown bakes ownership into the layer; a post-hoc `chown -R` would rewrite
+# every file (tens of thousands across numpy/scipy/etc.) and can hang for many
+# minutes on overlayfs.
+COPY --from=build --chown=chasemapper:chasemapper \
+  /root/.local /home/chasemapper/.local
 
 # Copy predictor binary from the build container.
-COPY --from=build /root/cusf_predictor_wrapper-master/src/build/pred \
+COPY --from=build --chown=chasemapper:chasemapper \
+  /root/cusf_predictor_wrapper-master/src/build/pred \
   /opt/chasemapper/
 
 # Copy in chasemapper.
 # Make sure .dockerignore excludes .git, docs, screenshots, etc.
-COPY . /opt/chasemapper
+COPY --chown=chasemapper:chasemapper . /opt/chasemapper
 
 # Set the working directory.
 WORKDIR /opt/chasemapper
 
 # Persist the airspace/TFR cache across container restarts.
-# Set ownership so the non-root user can write to the cache and read packages.
 RUN mkdir -p /opt/chasemapper/cache/airspace && \
-  chown -R chasemapper:chasemapper /opt/chasemapper /home/chasemapper/.local
+  chown chasemapper:chasemapper /opt/chasemapper/cache /opt/chasemapper/cache/airspace
 VOLUME ["/opt/chasemapper/cache"]
 
 # Ensure scripts from Python packages are in PATH.

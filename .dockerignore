@@ -2,6 +2,9 @@
 .github
 .gitignore
 .dockerignore
+.codegraph
+.claude
+.rtk
 __pycache__
 *.pyc
 *.pyo
@@ -21,7 +24,11 @@ doc/
 screenshots/
 screenshot/
 images/
+gfs/
+log_files/
 *.log
+*.zip
 .vscode
 .idea
 *.swp
+CLAUDE.md
