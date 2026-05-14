@@ -1,24 +1,28 @@
+# syntax=docker/dockerfile:1.7
 # -------------------
 # The build container
 # -------------------
 FROM python:3.11-bookworm AS build
 
-# Upgrade base packages.
-RUN apt-get update && \
-  apt-get upgrade -y && \
-  apt-get install -y \
+# Install build dependencies. apt cache mounts keep downloaded .deb files
+# between builds so incremental local rebuilds skip the apt download phase.
+# `rm -f docker-clean` is required so apt doesn't auto-purge the cache dir.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  rm -f /etc/apt/apt.conf.d/docker-clean && \
+  apt-get update && \
+  apt-get install -y --no-install-recommends \
   cmake \
   libgeos-dev \
-  libatlas-base-dev && \
-  rm -rf /var/lib/apt/lists/*
+  libatlas-base-dev
 
 # Copy in requirements.txt.
 COPY requirements.txt /root/chasemapper/requirements.txt
 
-# Install Python packages.
-# Added --no-cache-dir to avoid pip caching wheels in the build stage.
-RUN pip3 install --user --break-system-packages --no-warn-script-location \
-  --no-cache-dir \
+# Install Python packages. Cache mount keeps pip's HTTP/wheel cache between
+# builds — speeds up local rebuilds without affecting the final image size.
+RUN --mount=type=cache,target=/root/.cache/pip \
+  pip3 install --user --break-system-packages --no-warn-script-location \
   --ignore-installed -r /root/chasemapper/requirements.txt
 
 # NOTE: removed `COPY . /root/chasemapper` — the build stage only needs
@@ -50,19 +54,20 @@ RUN find /root/.local -name "*.pyc" -delete && \
 FROM python:3.11-slim-bookworm
 EXPOSE 5001/tcp
 
-# Upgrade base packages and install application dependencies.
+# Install application runtime dependencies.
 # Removed libatlas3-base — numpy wheels from PyPI bundle their own OpenBLAS.
 # Removed libgfortran5 — only needed if something dynamically links to it.
 # If chasemapper fails to start with an "import" or "shared library" error,
 # add these back one at a time.
-RUN apt-get update && \
-  apt-get upgrade -y && \
-  apt-get install -y \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+  --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  rm -f /etc/apt/apt.conf.d/docker-clean && \
+  apt-get update && \
+  apt-get install -y --no-install-recommends \
   libeccodes0 \
   libgeos-c1v5 \
   libglib2.0-0 \
-  tini && \
-  rm -rf /var/lib/apt/lists/*
+  tini
 
 # Create a non-root user to run the application.
 RUN useradd -r -u 1000 -m -s /bin/false chasemapper

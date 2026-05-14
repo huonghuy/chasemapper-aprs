@@ -66,11 +66,22 @@ def _ensure_cache_dir():
     os.makedirs(CACHE_DIR, exist_ok=True)
 
 
+# Pre-compute all cache paths from the LAYERS constant so that file paths
+# at runtime are always looked up from this dict, never derived from user input.
+_LAYER_PATHS = {
+    layer: (
+        os.path.join(CACHE_DIR, layer + ".geojson"),
+        os.path.join(CACHE_DIR, layer + ".meta.json"),
+    )
+    for layer in LAYERS
+}
+
+
 def _layer_paths(layer):
-    if layer not in LAYERS:
+    paths = _LAYER_PATHS.get(layer)
+    if paths is None:
         raise ValueError("unknown layer: %s" % layer)
-    base = os.path.join(CACHE_DIR, layer)
-    return base + ".geojson", base + ".meta.json"
+    return paths
 
 
 def _atomic_write_json(path, data):

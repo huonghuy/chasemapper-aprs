@@ -274,7 +274,8 @@ def flask_upload_geofence(profile_id):
     try:
         geofence = geofence_mod.parse_kml_geofence(kml_bytes)
     except geofence_mod.GeofenceParseError as e:
-        return flask.jsonify({"error": str(e)}), 400
+        logging.debug("Geofence parse error: %s", e)
+        return flask.jsonify({"error": "KML could not be parsed as a valid geofence."}), 400
 
     geofence_store[profile_id] = geofence
     geofence_mod.save_store(geofence_store_path, geofence_store)
