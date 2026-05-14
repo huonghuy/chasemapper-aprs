@@ -653,7 +653,18 @@ def run_prediction():
     # Set the semaphore so we don't accidentally kill the predictor object while it's running.
     predictor_semaphore = True
     _payload_list = list(current_payload_tracks.keys())
+
+    # SPOT trackers are display-only cross-reference traces. Their altitude
+    # is noisy / often 0 and would produce nonsense descent-rate and landing
+    # predictions, so skip them in the predictor loop.
+    _spot_callsigns = {
+        cs for cs, _env in chasemapper_config.get("spot_feeds", [])
+    }
+
     for _payload in _payload_list:
+        if _payload in _spot_callsigns:
+            logging.debug("Skipping prediction for SPOT tracker %s." % _payload)
+            continue
 
         # Check the age of the data.
         # No point re-running the predictor if the data is older than 30 seconds.
