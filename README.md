@@ -130,7 +130,7 @@ The example configuration file includes profiles suitable for receiving data fro
 
 You need to create a .env file if routing this through some back end. This will hold currently your
 - cloudflare key
-- SPOT Trace Key! (Coming Soon)
+- SPOT Trace Key!
 
 Once configured, you can start-up the horusmapper server with:
 ```
@@ -212,32 +212,88 @@ To stop the service, simply run:
 $ sudo systemctl stop chasemapper.service
 ```
 
-## Radio Direction Finding Support
-As of August 2019, Chasemapper can also plot bearings from radio-direction-finding devices. Bearing information is accepted in the 'horus_udp' format (essentially, JSON over UDP broadcast), and can be provided as either 'relative' (bearing relative to front-of-car, with no source position information), or 'absolute' (bearing relative to true north, with a source lat/lon). Relative bearings will be fused with the instantaneous car heading, which is currently calculated from speed-gated GPS headings, but can be improved by using a IMU-Fused GPS like the uBlox NEO-M8U, for which I have a 'driver' [available here](https://github.com/darksidelemm/chasemapper-gps-m8u).
+## RECOVERY_API_KEY Setup
 
-![Bearings Screenshot](https://github.com/projecthorus/chasemapper/raw/master/doc/bearings.jpg)
+`RECOVERY_API_KEY` is an optional shared secret that gates the recovery
+overlay endpoints — FAA airspace layers, TFRs, Maryland property parcels,
+and per-profile geofence upload/clear. It's there to prevent the public
+internet from hammering these (some of them proxy external APIs with
+rate limits or cost).
 
-The following formats are currently supported:
-```
-# Absolute bearings - lat/lon and true bearing provided
-{'type': 'BEARING', 'bearing_type': 'absolute', 'latitude': latitude, 'longitude': longitude, 'bearing': bearing}
+It is **not** issued by anyone — you generate the string yourself and
+plant the same value on both ends (server and Cloudflare).
 
-# Relative bearings - only relative bearing is provided.
-{'type': 'BEARING', 'bearing_type': 'relative', 'bearing': bearing}
+### When you need it
 
-The following optional fields can be provided:
-    'source': An identifier for the source of the bearings, i.e. 'kerberos-sdr', 'yagi-1'
-    'timestamp': A timestamp of the bearing provided by the source.
-    'confidence': A confidence value for the bearing, from 0 to [MAX VALUE ??]
-    'power': A reading of signal power
-    'raw_bearing_angles': A list of angles, associated with...
-    'raw_doa': A list of TDOA result values, for each of the provided angles.
-```
+| Deployment                                          | Need it?         |
+| --------------------------------------------------- | ---------------- |
+| Local / LAN-only chase laptop                       | No — leave unset |
+| Exposed publicly (custom domain, behind Cloudflare) | Yes              |
+| Behind a VPN / Tailscale only                       | Optional         |
 
-A special case is also available, where if the `bearing_type` is set to `delete`, the last received bearing which matches the same `source` field is removed. An optional `quantity` field can be used to set the number of bearings to be removed, otherwise a single bearing is removed. An example of this would be:
-```
-{'type': 'BEARING', 'bearing_type': 'delete', 'source': 'BPI', 'quantity': 2}
-```
-The main use-case for this is to allow manual bearing entry devices to have a 'backspace' button, to remove bearings which were identified as bad just after submission.
+When unset, the recovery endpoints are open. When set, every request to
+them must carry `X-Recovery-Key: <your value>` or the server returns
+`403 Forbidden`.
 
-The above formats are accepted via a horus_udp listener, and so you must have a [profile](https://github.com/projecthorus/chasemapper/blob/master/horusmapper.cfg.example#L18) set up with a `telemetry_source_type` of `horus_udp`. 
+### 1. Generate a secret
+
+Any sufficiently random string works. ~32 bytes is plenty:
+
+    python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+
+Example output:
+
+    s9vK2_oQ8nE7yT4xR1pL6zB0mC3jH5aF8wD2qV-uIyc
+
+### 2. Put it in your `.env`
+
+    RECOVERY_API_KEY=s9vK2_oQ8nE7yT4xR1pL6zB0mC3jH5aF8wD2qV-uIyc
+
+Make sure `env_file: - .env` is set on the chasemapper service in your
+`docker-compose.yml`, then `docker compose up -d`.
+
+### 3. Inject the header at Cloudflare
+
+This is what closes the loop — Cloudflare adds the header so legitimate
+browser requests pass through, while raw requests from the public
+internet (no header) get rejected.
+
+1. Cloudflare dashboard → your domain → **Rules** → **Transform Rules**
+   → **Modify Request Header** → **Create rule**
+2. **When incoming requests match**: pick the hostname / path scope you
+   want covered. A simple option is "Hostname equals chasemapper.example.com".
+3. **Then…** → **Set static** →
+   - Header name: `X-Recovery-Key`
+   - Value: paste the same secret you put in `.env`
+4. Deploy.
+
+Cloudflare now stamps every request to that hostname with the header
+before it reaches your origin.
+
+### 4. Verify
+
+From a machine that bypasses Cloudflare (e.g. SSH into the host and curl
+localhost), the endpoints should reject unkeyed requests:
+
+    curl -i http://localhost:5001/airspace/status
+    # → HTTP/1.1 403 Forbidden
+    # → {"error":"forbidden"}
+
+    curl -i -H "X-Recovery-Key: s9vK2_..." http://localhost:5001/airspace/status
+    # → HTTP/1.1 200 OK
+    # → {"loaded":...}
+
+From a real browser through Cloudflare, the airspace toggle in the UI
+should just work — if it 403s, the Transform Rule isn't matching that
+request path.
+
+### Rotating the key
+
+Update both places at once:
+
+1. New value in `.env` → `docker compose up -d` (the container restarts
+   and re-reads the env)
+2. Update the Cloudflare Transform Rule with the same new value
+
+There's no key list or revocation — the server only knows one value at
+a time.
