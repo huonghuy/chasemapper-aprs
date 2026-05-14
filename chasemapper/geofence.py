@@ -44,7 +44,7 @@ import logging
 import os
 import re
 import threading
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 
 
 KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}

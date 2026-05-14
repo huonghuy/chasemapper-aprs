@@ -15,4 +15,5 @@ aprslib
 xarray
 cfgrib>=0.9.15.1
 fastkml
+defusedxml
 shapely>=2.0.0 ; python_version >= "3.12"
