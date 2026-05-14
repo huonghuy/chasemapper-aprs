@@ -2,7 +2,7 @@
 # -------------------
 # The build container
 # -------------------
-FROM python:3.11-bookworm AS build
+FROM python:3.12-bookworm AS build
 
 # Install build dependencies. apt cache mounts keep downloaded .deb files
 # between builds so incremental local rebuilds skip the apt download phase.
@@ -57,7 +57,7 @@ RUN find /root/.local -name "*.pyc" -delete && \
 # -------------------------
 # The application container
 # -------------------------
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 EXPOSE 5001/tcp
 
 # Install application runtime dependencies.
@@ -72,7 +72,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   apt-get install -y --no-install-recommends \
   libeccodes0 \
   libgeos-c1v5 \
-  libglib2.0-0 \
   tini
 
 # Create a non-root user to run the application.
