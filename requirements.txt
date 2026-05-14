@@ -1,4 +1,5 @@
 eccodes>=2.47.0
+eccodeslib
 cusfpredict ; python_version < "3.12"
 cusfpredict @ git+https://github.com/darksidelemm/cusf_predictor_wrapper.git ; python_version >= "3.12"
 flask

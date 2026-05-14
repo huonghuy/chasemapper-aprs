@@ -1,5 +1,5 @@
 //
-// Project Horus - Browser-Based Chase Mapper - Geofence Overlay
+// CHASE - Browser-Based Chase Mapper - Geofence Overlay
 //
 // Renders a per-profile geofence polygon (uploaded as a HAB Bounder
 // KML) on the Leaflet map. The active profile's geofence is drawn
@@ -17,6 +17,9 @@
 //   - "Remain inside" => green polygon (the safe region)
 //   - "Remain outside" => red polygon (the keep-out region)
 //   Popup shows min/max altitude (Leaflet is 2D — altitude is text only).
+//
+//   Copyright (C) 2026 Huy Huong <huyhuong@umd.edu>
+//   Released under GNU GPL v3 or later
 //
 (function () {
     "use strict";

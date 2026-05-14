@@ -1,3 +1,11 @@
+#!/usr/bin/env python
+#
+#   CHASE - Browser-Based Chase Mapper
+#
+#   Copyright (C) 2026  Huy Huong <huyhuong@umd.edu>
+#   Released under GNU GPL v3 or later
+#
+
 """
 Per-day chase-car track buffer.
 

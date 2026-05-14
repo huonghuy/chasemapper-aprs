@@ -1,10 +1,13 @@
 //
-// Project Horus - Browser-Based Chase Mapper - UI State Persistence
+// CHASE - Browser-Based Chase Mapper - UI State Persistence
 //
 // Saves transient UI state (autofollow, airspace overlay toggles, parcel
 // toggle + radius) to localStorage so a page refresh during a chase day
 // restores the same view. State is stamped with the UTC date and discarded
 // on day rollover.
+//
+//   Copyright (C) 2026 Huy Huong <huyhuong@umd.edu>
+//   Released under GNU GPL v3 or later
 //
 (function () {
     "use strict";

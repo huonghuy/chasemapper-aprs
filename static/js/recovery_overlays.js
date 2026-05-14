@@ -1,9 +1,12 @@
 //
-// Project Horus - Browser-Based Chase Mapper - Recovery Overlays
+// CHASE - Browser-Based Chase Mapper - Recovery Overlays
 //
 // Self-contained module exposing window.RecoveryOverlays.
 // Adds toggleable FAA airspace, TFR, and Maryland parcel overlays plus
 // platform-aware Maps links on the predicted landing marker.
+//
+//   Copyright (C) 2026 Huy Huong <huyhuong@umd.edu>
+//   Released under GNU GPL v3 or later
 //
 (function () {
     "use strict";

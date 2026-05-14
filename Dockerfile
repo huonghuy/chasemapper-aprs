@@ -70,8 +70,11 @@ RUN apt-get update && \
   tini && \
   rm -rf /var/lib/apt/lists/*
 
+# Create a non-root user to run the application.
+RUN useradd -r -u 1000 -m -s /bin/false chasemapper
+
 # Copy any additional Python packages from the build container.
-COPY --from=build /root/.local /root/.local
+COPY --from=build /root/.local /home/chasemapper/.local
 
 # Copy predictor binary from the build container.
 COPY --from=build /root/cusf_predictor_wrapper-master/src/build/pred \
@@ -85,11 +88,15 @@ COPY . /opt/chasemapper
 WORKDIR /opt/chasemapper
 
 # Persist the airspace/TFR cache across container restarts.
-RUN mkdir -p /opt/chasemapper/cache/airspace
+# Set ownership so the non-root user can write to the cache and read packages.
+RUN mkdir -p /opt/chasemapper/cache/airspace && \
+  chown -R chasemapper:chasemapper /opt/chasemapper /home/chasemapper/.local
 VOLUME ["/opt/chasemapper/cache"]
 
 # Ensure scripts from Python packages are in PATH.
-ENV PATH=/root/.local/bin:$PATH
+ENV PATH=/home/chasemapper/.local/bin:$PATH
+
+USER chasemapper
 
 # Use tini as init.
 ENTRYPOINT ["/usr/bin/tini", "--"]

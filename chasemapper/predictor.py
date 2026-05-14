@@ -6,6 +6,7 @@
 #   Released under GNU GPL v3 or later
 #
 import logging
+import shlex
 import subprocess
 from threading import Thread
 
@@ -25,7 +26,7 @@ def predictor_download_model(command, callback):
     model_download_running = True
 
     try:
-        ret_code = subprocess.call(command, shell=True)
+        ret_code = subprocess.call(shlex.split(command))
     except Exception as e:
         # Something broke when running the detection function.
         logging.error("Error when attempting to download model - %s" % (str(e)))

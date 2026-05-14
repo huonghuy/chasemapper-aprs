@@ -14,6 +14,7 @@ if sys.version_info < (3, 6):
 
 import json
 import logging
+import math
 import flask
 from flask_socketio import SocketIO
 import os.path
@@ -215,6 +216,8 @@ def flask_parcels():
         lat = float(flask.request.args.get("lat"))
         lon = float(flask.request.args.get("lon"))
         radius = float(flask.request.args.get("radius", 0.5))
+        if not all(math.isfinite(v) for v in (lat, lon, radius)):
+            raise ValueError("non-finite value")
     except (TypeError, ValueError):
         return flask.jsonify({"error": "lat, lon, radius are required numeric query params"}), 400
     if radius > 1.0:
