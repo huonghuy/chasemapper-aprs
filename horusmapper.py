@@ -32,6 +32,7 @@ from chasemapper.geometry import *
 from chasemapper.gps import SerialGPS
 from chasemapper.gpsd import GPSDAdaptor
 from chasemapper.aprsis import APRSISListener
+from chasemapper.spot import SPOTListener
 from chasemapper.atmosphere import time_to_landing
 from chasemapper.listeners import OziListener, UDPListener, fix_datetime
 from chasemapper.predictor import predictor_spawn_download, model_download_running
@@ -1466,6 +1467,16 @@ def start_listeners(profile):
         else:
             # No Car position.
             logging.info("No car position data source.")
+
+    # SPOT GPS tracker feeds — global, independent of profile selection.
+    if chasemapper_config.get("spot_enabled") and chasemapper_config.get("spot_feeds"):
+        _spot = SPOTListener(
+            feeds=chasemapper_config["spot_feeds"],
+            summary_callback=udp_listener_summary_callback,
+            poll_interval=chasemapper_config.get("spot_poll_interval", 300),
+        )
+        _spot.start()
+        data_listeners.append(_spot)
 
 
 @socketio.on("profile_change", namespace="/chasemapper")

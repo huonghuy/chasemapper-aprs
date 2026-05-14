@@ -56,6 +56,65 @@ To use the map, you need some kind of data to plot on it! The mapping backend ac
 * 'OziMux' messages, via UDP broadcast in a simple CSV format [described here](https://github.com/projecthorus/oziplotter/wiki/3---Data-Sources#3---oziplotter-data-inputs).
   * Pi-in-the-Sky's [lora_gateway](https://github.com/PiInTheSky/lora-gateway) - Using the `OziPort=8942` configuration option.
 
+## .env Setup
+
+Chasemapper reads secrets from environment variables to keep them out of
+the committed config. Create a `.env` file in the repo root (already
+gitignored):
+
+    touch .env
+
+### Variables
+
+| Variable             | Required?  | Purpose                                       |
+| -------------------- | ---------- | --------------------------------------------- |
+| `RECOVERY_API_KEY`   | Optional   | Auth token for FAA airspace / TFR / MD parcel |
+|                      |            | overlays. Set only if running behind          |
+|                      |            | Cloudflare with X-Recovery-Key injection.     |
+| `SPOT_FEED_COMMAND`  | Optional   | SPOT public-feed ID for the "command"         |
+|                      |            | tracker.                                      |
+| `SPOT_FEED_HAPL`     | Optional   | SPOT public-feed ID for the "HAPL" tracker.   |
+
+Unset variables disable the corresponding feature — chasemapper logs a
+warning and continues.
+
+### Finding a SPOT Feed ID
+
+1. Sign in at https://www.findmespot.com
+2. Open your device → **Share** → create or open a **Shared Page**
+3. The Feed ID is the long alphanumeric token in the page URL
+4. Paste each into `.env`:
+
+       RECOVERY_API_KEY=...
+       SPOT_FEED_COMMAND=XXXXXXXXXXXXXXXXXXXX
+       SPOT_FEED_HAPL=YYYYYYYYYYYYYYYYYYYY
+
+### Wiring it into docker-compose
+
+Add `env_file:` to the chasemapper service in your `docker-compose.yml`:
+
+    services:
+      chasemapper:
+        # ... your existing config ...
+        env_file:
+          - .env
+
+Then start as usual:
+
+    docker compose up -d
+
+### Verify
+
+    docker compose logs chasemapper | grep SPOT
+
+You should see:
+
+    SPOT: started listener for 2 feed(s), poll interval 300s
+
+If you see `SPOT: <callsign> skipped — env var ... is not set`, the
+variable isn't reaching the container — check `env_file:` is set on the
+right service and the `.env` file is in the directory you run
+`docker compose` from.
 
 ## Configuration & Startup
 Many settings are defined in the [horusmapper.cfg](./horusmapper.cfg.example) configuration file.

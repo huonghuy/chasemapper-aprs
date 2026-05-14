@@ -126,6 +126,27 @@ aprsis_login_callsign = KC1RBW
 # Note: balloon/car callsigns are now configured per-profile in each [profile_N] section.
 
 
+# SPOT GPS Tracker Settings
+# Polls findmespot.com public XML feeds and plots the positions as
+# additional balloon tracks for cross-referencing against the primary
+# RTTY/LoRa/APRS telemetry. Display-only — not fed into the predictor.
+[spot]
+
+spot_enabled = True
+
+# Poll interval in seconds. SPOT basic tracking updates roughly every
+# 10 min, and the public API rate-limits at ~1 req / 2.5 min per feed.
+# 300 (5 min) is the recommended floor.
+spot_poll_interval = 300
+
+# Comma-separated list of "callsign:ENV_VAR" pairs. The callsign is what
+# appears on the map; the env var holds the SPOT shared-page Feed ID.
+# Set the env vars in the process environment (shell export,
+# systemd EnvironmentFile=, or docker run -e), same pattern as
+# RECOVERY_API_KEY. Leaving an env var unset skips that tracker with a warning.
+spot_feeds = SPOT-command:SPOT_FEED_COMMAND, SPOT-hapl:SPOT_FEED_HAPL
+
+
 # Map Settings
 [map]
 # Host/port to host webserver on

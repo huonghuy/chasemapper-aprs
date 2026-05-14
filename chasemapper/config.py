@@ -241,6 +241,29 @@ def parse_config_file(filename):
         chase_config["aprsis_port"] = 14580
         chase_config["aprsis_login_callsign"] = "N0CALL"
 
+    # SPOT GPS tracker public feeds. Feed IDs are read from env vars
+    # (see [spot] section in horusmapper.cfg.example).
+    chase_config["spot_enabled"] = False
+    chase_config["spot_poll_interval"] = 300
+    chase_config["spot_feeds"] = []
+    try:
+        chase_config["spot_enabled"] = config.getboolean("spot", "spot_enabled")
+        chase_config["spot_poll_interval"] = config.getint("spot", "spot_poll_interval")
+        # spot_feeds format: "callsign:ENV_VAR, callsign:ENV_VAR, ..."
+        raw = config.get("spot", "spot_feeds")
+        for pair in raw.split(","):
+            pair = pair.strip()
+            if not pair or ":" not in pair:
+                continue
+            cs, env = pair.split(":", 1)
+            cs = cs.strip()
+            env = env.strip()
+            if cs and env:
+                chase_config["spot_feeds"].append((cs, env))
+    except Exception:
+        logging.info("Missing or incomplete [spot] config section, SPOT disabled.")
+        chase_config["spot_enabled"] = False
+
     # Telemetry Source Profiles
 
     _profile_count = config.getint("profile_selection", "profile_count")
