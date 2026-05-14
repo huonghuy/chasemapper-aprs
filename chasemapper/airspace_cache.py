@@ -67,6 +67,8 @@ def _ensure_cache_dir():
 
 
 def _layer_paths(layer):
+    if layer not in LAYERS:
+        raise ValueError("unknown layer: %s" % layer)
     base = os.path.join(CACHE_DIR, layer)
     return base + ".geojson", base + ".meta.json"
 
