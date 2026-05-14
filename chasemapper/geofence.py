@@ -11,10 +11,24 @@ Per-profile geofence storage and KML parsing.
 
 A geofence is a polygon (lat/lon ring) plus min/max altitude and a
 remain-inside / remain-outside flag. Geofences are uploaded as KML
-files exported by the HAB Bounder cut-down device, parsed here into a
-small JSON-friendly dict, persisted to a sidecar JSON file next to the
-chasemapper config, and attached to each profile in chasemapper_config
-so the frontend renders them on the Leaflet map.
+files exported by the HAB Bounder cut-down device, or drawn directly
+on the Leaflet map; either way they're stored as a small JSON-friendly
+dict and persisted to a sidecar JSON file next to the chasemapper
+config. The frontend renders the active profile's polygon on the map.
+
+Store shape on disk:
+
+    {
+        "profiles": { "<profile>": {polygon, min_alt, max_alt, remain}, ... },
+        "trash":    [ {profile, geofence, deleted_at}, ... ]
+    }
+
+Anything moved out of `profiles` (via DELETE, or by being overwritten
+by a new upload/draw) lands in `trash` so the operator can recover
+from accidental clears. The trash is auto-pruned after 2 days — long
+enough to recover from same-flight mistakes, short enough that the
+sidecar stays small. Definitive per-flight history lives on choppies
+itself, not here.
 
 KML shape we expect (HAB Bounder export):
 
@@ -44,6 +58,7 @@ import logging
 import os
 import re
 import threading
+import time
 import defusedxml.ElementTree as ET
 
 
@@ -190,29 +205,116 @@ def parse_kml_geofence(kml_bytes):
     }
 
 
+# ---- Polygon validation (for client-drawn geofences) -------------------
+
+
+def build_geofence_from_polygon(polygon, min_alt, max_alt, remain):
+    """Validate a user-drawn polygon and return the canonical geofence
+    dict (same shape parse_kml_geofence produces).
+
+    `polygon` is expected as an iterable of [lat, lon] pairs.
+    """
+    if not isinstance(polygon, (list, tuple)):
+        raise GeofenceParseError("polygon must be a list of [lat, lon] pairs.")
+
+    cleaned = []
+    for pt in polygon:
+        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+            raise GeofenceParseError("Each polygon point must be [lat, lon].")
+        try:
+            lat = float(pt[0])
+            lon = float(pt[1])
+        except (TypeError, ValueError):
+            raise GeofenceParseError("Polygon point has non-numeric coordinate.")
+        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+            raise GeofenceParseError(
+                "Coordinate out of range: lat=%s lon=%s" % (lat, lon)
+            )
+        cleaned.append([lat, lon])
+
+    # Match the KML parser: drop a duplicate closing vertex if present.
+    while len(cleaned) > 3 and cleaned[-1] == cleaned[-2]:
+        cleaned.pop()
+    if len(cleaned) > 3 and cleaned[0] == cleaned[-1]:
+        cleaned.pop()
+
+    if len(cleaned) < 3:
+        raise GeofenceParseError(
+            "Polygon needs at least 3 distinct vertices (got %d)." % len(cleaned)
+        )
+
+    try:
+        min_alt_f = float(min_alt)
+        max_alt_f = float(max_alt)
+    except (TypeError, ValueError):
+        raise GeofenceParseError("min_alt and max_alt must be numeric.")
+    if min_alt_f >= max_alt_f:
+        raise GeofenceParseError("min_alt must be less than max_alt.")
+
+    remain_norm = str(remain or "").strip().lower()
+    if remain_norm not in ("inside", "outside"):
+        raise GeofenceParseError("remain must be 'inside' or 'outside'.")
+
+    return {
+        "polygon": cleaned,
+        "min_alt": min_alt_f,
+        "max_alt": max_alt_f,
+        "remain": remain_norm,
+    }
+
+
 # ---- Persistence -------------------------------------------------------
+
+# How long a cleared/overwritten geofence stays in the trash before
+# the next save sweeps it away. Long enough to recover from same-flight
+# mistakes; the authoritative per-flight log lives on choppies.
+TRASH_TTL_SECONDS = 2 * 24 * 60 * 60
+
+
+def _empty_store():
+    return {"profiles": {}, "trash": []}
+
+
+def _normalize_store(data):
+    """Coerce on-disk data into the {profiles, trash} shape. Migrates
+    the pre-trash flat shape ({profile: geofence, ...}) transparently."""
+    if not isinstance(data, dict):
+        return _empty_store()
+
+    if "profiles" in data or "trash" in data:
+        profiles = data.get("profiles") or {}
+        trash = data.get("trash") or []
+        if not isinstance(profiles, dict):
+            profiles = {}
+        if not isinstance(trash, list):
+            trash = []
+        return {"profiles": profiles, "trash": trash}
+
+    # Legacy flat shape: every top-level value is a geofence dict.
+    profiles = {k: v for k, v in data.items() if isinstance(v, dict)}
+    return {"profiles": profiles, "trash": []}
 
 
 def load_store(path):
-    """Load the geofences sidecar. Returns {} on missing/invalid."""
+    """Load the geofences sidecar. Returns an empty store on
+    missing/invalid input. Always returns the {profiles, trash} shape."""
     if not path or not os.path.isfile(path):
-        return {}
+        return _empty_store()
     try:
         with open(path, "r") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
         logging.warning("Could not read geofence store %s: %s" % (path, e))
-        return {}
-    if not isinstance(data, dict):
-        logging.warning("Geofence store %s is not a JSON object, ignoring." % path)
-        return {}
-    return data
+        return _empty_store()
+    return _normalize_store(data)
 
 
 def save_store(path, store):
-    """Atomically write the geofences sidecar."""
+    """Atomically write the geofences sidecar. Prunes expired trash
+    entries on the way out so the file doesn't grow unbounded."""
     if not path:
         return
+    prune_trash(store)
     with _save_lock:
         tmp = path + ".tmp"
         try:
@@ -223,8 +325,111 @@ def save_store(path, store):
             logging.error("Could not save geofence store %s: %s" % (path, e))
 
 
+def prune_trash(store, now=None):
+    """Drop trash entries older than TRASH_TTL_SECONDS. Mutates `store`
+    in place and returns the number of entries removed."""
+    trash = store.get("trash")
+    if not isinstance(trash, list) or not trash:
+        return 0
+    cutoff = (now if now is not None else time.time()) - TRASH_TTL_SECONDS
+    kept = []
+    dropped = 0
+    for entry in trash:
+        if not isinstance(entry, dict):
+            dropped += 1
+            continue
+        deleted_at = entry.get("deleted_at")
+        try:
+            deleted_at_f = float(deleted_at)
+        except (TypeError, ValueError):
+            # No / unparseable timestamp — treat as already-expired.
+            dropped += 1
+            continue
+        if deleted_at_f < cutoff:
+            dropped += 1
+            continue
+        kept.append(entry)
+    if dropped:
+        store["trash"] = kept
+    return dropped
+
+
+def _push_to_trash(store, profile, geofence):
+    """Move a profile's existing geofence into the trash. No-op if the
+    profile has nothing set or the geofence is empty."""
+    if not geofence:
+        return
+    store.setdefault("trash", []).append({
+        "profile": profile,
+        "geofence": geofence,
+        "deleted_at": time.time(),
+    })
+
+
+def set_profile_geofence(store, profile, geofence):
+    """Replace a profile's geofence, sending any previous one to trash.
+    Mutates `store` in place."""
+    profiles = store.setdefault("profiles", {})
+    previous = profiles.get(profile)
+    if previous and previous != geofence:
+        _push_to_trash(store, profile, previous)
+    profiles[profile] = geofence
+
+
+def clear_profile_geofence(store, profile):
+    """Soft-delete a profile's geofence (moves it to trash). Returns
+    True if something was cleared."""
+    profiles = store.setdefault("profiles", {})
+    previous = profiles.pop(profile, None)
+    if not previous:
+        return False
+    _push_to_trash(store, profile, previous)
+    return True
+
+
+def restore_latest(store, profile):
+    """Pop the most recent trash entry for `profile` and reinstate it
+    as the active geofence. Returns the restored geofence dict, or
+    None if there was nothing to restore.
+
+    If the profile already has a geofence set, that one is pushed to
+    trash first so the restore is itself undoable.
+    """
+    trash = store.setdefault("trash", [])
+    # Most recent first.
+    for i in range(len(trash) - 1, -1, -1):
+        entry = trash[i]
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("profile") != profile:
+            continue
+        restored = entry.get("geofence")
+        if not restored:
+            continue
+        del trash[i]
+        profiles = store.setdefault("profiles", {})
+        current = profiles.get(profile)
+        if current and current != restored:
+            _push_to_trash(store, profile, current)
+        profiles[profile] = restored
+        return restored
+    return None
+
+
+def has_trash(store, profile):
+    """True if there is at least one recoverable trash entry for the
+    given profile."""
+    for entry in store.get("trash", []) or []:
+        if isinstance(entry, dict) and entry.get("profile") == profile and entry.get("geofence"):
+            return True
+    return False
+
+
 def attach_to_profiles(chasemapper_config, store):
-    """Stamp each profile dict with its geofence (or None) so it ships
-    out via /get_config and server_settings_update."""
+    """Stamp each profile dict with its geofence (or None) and a
+    has_trash flag so the frontend can enable Restore. Shipped out via
+    /get_config and server_settings_update."""
+    profiles_store = store.get("profiles", {}) if isinstance(store, dict) else {}
     for name, profile in chasemapper_config.get("profiles", {}).items():
-        profile["geofence"] = store.get(name)
+        profile["geofence"] = profiles_store.get(name)
+        profile["geofence_has_trash"] = has_trash(store, name)

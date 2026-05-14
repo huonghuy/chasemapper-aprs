@@ -983,19 +983,41 @@
                 <select id="profileSelect" name="profileSelect">
                 </select>
 
-                <h4 style="margin-top:8px;">Geofence (CHOPPIES KML)</h4>
+                <h4 style="margin-top:8px;">Choppies Geofence</h4>
                 <div style="font-size:12px; color:#6b7280;">
-                    Upload the choppies's Flight.KML to overlay its
-                    geofence on the map for the selected profile.
+                    Upload a choppies Flight.KML <i>or</i> draw the geofence
+                    directly on the map for the selected profile.
                 </div>
                 <div style="margin-top:4px;">
                     <input type="file" id="geofence-file" accept=".kml,.KML,application/vnd.google-earth.kml+xml" />
+                </div>
+                <div style="margin-top:6px; font-size:12px;">
+                    <label>Min Alt (m)
+                        <input type="number" id="geofence-min-alt" value="-500" step="100" style="width:80px;">
+                    </label>
+                    <label style="margin-left:8px;">Max Alt (m)
+                        <input type="number" id="geofence-max-alt" value="23000" step="500" style="width:90px;">
+                    </label>
+                </div>
+                <div style="margin-top:4px; font-size:12px;">
+                    Remain
+                    <label style="margin-left:4px;"><input type="radio" name="geofence-remain" value="inside" checked> inside</label>
+                    <label style="margin-left:6px;"><input type="radio" name="geofence-remain" value="outside"> outside</label>
+                </div>
+                <div style="margin-top:6px;">
+                    <button type="button" id="geofence-draw">Draw on map</button>
+                    <button type="button" id="geofence-finish" disabled>Finish</button>
+                    <button type="button" id="geofence-cancel-draw" disabled>Cancel</button>
                 </div>
                 <div style="margin-top:4px;">
                     <label style="font-size:13px;">
                         <input type="checkbox" id="geofence-visible" checked> Show on map
                     </label>
                     <button type="button" id="geofence-clear" disabled style="margin-left:8px;">Clear</button>
+                    <button type="button" id="geofence-restore" disabled style="margin-left:4px;">Restore</button>
+                </div>
+                <div style="margin-top:4px;">
+                    <button type="button" id="geofence-copy" disabled>Copy choppies waypoints</button>
                 </div>
                 <div id="geofence-status" style="font-size:12px; margin-top:4px; color:#6b7280;"></div>
 

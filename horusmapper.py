@@ -226,16 +226,33 @@ def flask_parcels():
     return flask.jsonify(parcel_proxy.get_parcels_near(lat, lon, radius))
 
 
-# ---- Per-profile geofence (HAB Bounder KML upload) --------------------
+# ---- Per-profile geofence (choppies KML upload + on-map drawing) ------
 #
-# The HAB Bounder cut-down device exports its programmed geofence in a
-# KML file. These routes let the operator upload that KML against a
-# specific telemetry profile so the polygon is overlaid on the Leaflet
-# map whenever that profile is selected.
+# Each telemetry profile can have one geofence: a polygon plus min/max
+# altitude and a remain inside/outside flag. The operator can either
+# upload a HAB Bounder KML or draw the polygon directly on the Leaflet
+# map; both paths land here and produce the same record.
 #
-# Storage is a sidecar JSON file (geofences.json) keyed by profile
-# name. Each upload broadcasts a `geofence_update` SocketIO event so
-# every connected client refreshes immediately.
+# Storage is a sidecar JSON file (geofences.json) under {profiles, trash}.
+# A DELETE or an overwrite moves the previous geofence into `trash` so
+# accidental clears are recoverable; trash entries are auto-pruned
+# after 2 days on the next save (see geofence.py:TRASH_TTL_SECONDS).
+#
+# Every mutation broadcasts a `geofence_update` SocketIO event so all
+# connected clients refresh immediately.
+
+
+def _broadcast_geofence(profile_id):
+    """Push the current geofence (and trash availability) for a profile
+    out to every connected client."""
+    flask_emit_event(
+        "geofence_update",
+        {
+            "profile": profile_id,
+            "geofence": geofence_store.get("profiles", {}).get(profile_id),
+            "has_trash": geofence_mod.has_trash(geofence_store, profile_id),
+        },
+    )
 
 
 @app.route("/geofence/<profile_id>", methods=["GET"])
@@ -245,13 +262,26 @@ def flask_get_geofence(profile_id):
         return auth
     if profile_id not in chasemapper_config.get("profiles", {}):
         return flask.jsonify({"error": "unknown profile"}), 404
-    return flask.jsonify(geofence_store.get(profile_id))
+    return flask.jsonify({
+        "geofence": geofence_store.get("profiles", {}).get(profile_id),
+        "has_trash": geofence_mod.has_trash(geofence_store, profile_id),
+    })
 
 
 @app.route("/geofence/<profile_id>", methods=["POST"])
 def flask_upload_geofence(profile_id):
-    """Upload a KML for the given profile. Accepts either a multipart
-    form-data field named "kml" or a raw KML request body."""
+    """Upload a geofence for the given profile.
+
+    Accepts either:
+      - a HAB Bounder KML, via multipart 'kml' field or raw body
+        (Content-Type application/vnd.google-earth.kml+xml or text/xml), or
+      - a JSON body with shape:
+          {"polygon": [[lat,lon], ...],
+           "min_alt": float, "max_alt": float, "remain": "inside"|"outside"}
+
+    Either way, any previous geofence on this profile is moved to
+    trash, so the user can hit Restore to undo the change.
+    """
     global geofence_store
 
     auth = _check_recovery_auth()
@@ -261,42 +291,61 @@ def flask_upload_geofence(profile_id):
     if profile_id not in chasemapper_config.get("profiles", {}):
         return flask.jsonify({"error": "unknown profile"}), 404
 
-    kml_bytes = b""
-    if "kml" in flask.request.files:
-        kml_bytes = flask.request.files["kml"].read()
-    elif flask.request.data:
-        kml_bytes = flask.request.data
+    # Decide which body shape we got. JSON when explicitly typed as
+    # such, or when there's no multipart KML and the body looks like
+    # JSON. Otherwise treat as KML bytes.
+    geofence = None
+    is_json = flask.request.is_json or (
+        flask.request.mimetype == "application/json"
+    )
+    if is_json:
+        payload = flask.request.get_json(silent=True) or {}
+        try:
+            geofence = geofence_mod.build_geofence_from_polygon(
+                payload.get("polygon"),
+                payload.get("min_alt"),
+                payload.get("max_alt"),
+                payload.get("remain"),
+            )
+        except geofence_mod.GeofenceParseError as e:
+            return flask.jsonify({"error": str(e)}), 400
+    else:
+        kml_bytes = b""
+        if "kml" in flask.request.files:
+            kml_bytes = flask.request.files["kml"].read()
+        elif flask.request.data:
+            kml_bytes = flask.request.data
 
-    if not kml_bytes:
-        return flask.jsonify({"error": "no KML payload (use multipart 'kml' or raw body)"}), 400
-    if len(kml_bytes) > geofence_mod.MAX_KML_BYTES:
-        return flask.jsonify({"error": "KML exceeds 5 MB limit"}), 413
+        if not kml_bytes:
+            return flask.jsonify({"error": "no payload (multipart 'kml', raw KML, or JSON polygon)"}), 400
+        if len(kml_bytes) > geofence_mod.MAX_KML_BYTES:
+            return flask.jsonify({"error": "KML exceeds 5 MB limit"}), 413
+        try:
+            geofence = geofence_mod.parse_kml_geofence(kml_bytes)
+        except geofence_mod.GeofenceParseError as e:
+            logging.debug("Geofence parse error: %s", e)
+            return flask.jsonify({"error": "KML could not be parsed as a valid geofence."}), 400
 
-    try:
-        geofence = geofence_mod.parse_kml_geofence(kml_bytes)
-    except geofence_mod.GeofenceParseError as e:
-        logging.debug("Geofence parse error: %s", e)
-        return flask.jsonify({"error": "KML could not be parsed as a valid geofence."}), 400
-
-    geofence_store[profile_id] = geofence
+    geofence_mod.set_profile_geofence(geofence_store, profile_id, geofence)
     geofence_mod.save_store(geofence_store_path, geofence_store)
     geofence_mod.attach_to_profiles(chasemapper_config, geofence_store)
-
-    flask_emit_event(
-        "geofence_update",
-        {"profile": profile_id, "geofence": geofence},
-    )
+    _broadcast_geofence(profile_id)
     logging.info(
-        "Geofence uploaded for profile '%s' (%d vertices, remain %s, alt %s..%s m)"
+        "Geofence set for profile '%s' (%d vertices, remain %s, alt %s..%s m, src=%s)"
         % (
             profile_id,
             len(geofence["polygon"]),
             geofence["remain"],
             geofence["min_alt"],
             geofence["max_alt"],
+            "json" if is_json else "kml",
         )
     )
-    return flask.jsonify({"ok": True, "geofence": geofence})
+    return flask.jsonify({
+        "ok": True,
+        "geofence": geofence,
+        "has_trash": geofence_mod.has_trash(geofence_store, profile_id),
+    })
 
 
 @app.route("/geofence/<profile_id>", methods=["DELETE"])
@@ -310,17 +359,49 @@ def flask_clear_geofence(profile_id):
     if profile_id not in chasemapper_config.get("profiles", {}):
         return flask.jsonify({"error": "unknown profile"}), 404
 
-    if profile_id in geofence_store:
-        del geofence_store[profile_id]
+    cleared = geofence_mod.clear_profile_geofence(geofence_store, profile_id)
+    if cleared:
         geofence_mod.save_store(geofence_store_path, geofence_store)
         geofence_mod.attach_to_profiles(chasemapper_config, geofence_store)
-        logging.info("Geofence cleared for profile '%s'" % profile_id)
+        logging.info("Geofence cleared (soft-deleted) for profile '%s'" % profile_id)
 
-    flask_emit_event(
-        "geofence_update",
-        {"profile": profile_id, "geofence": None},
+    _broadcast_geofence(profile_id)
+    return flask.jsonify({
+        "ok": True,
+        "has_trash": geofence_mod.has_trash(geofence_store, profile_id),
+    })
+
+
+@app.route("/geofence/<profile_id>/restore", methods=["POST"])
+def flask_restore_geofence(profile_id):
+    """Reinstate the most recently cleared/overwritten geofence for a
+    profile. The currently-active geofence (if any) is itself moved to
+    trash, so the restore is undoable."""
+    global geofence_store
+
+    auth = _check_recovery_auth()
+    if auth is not None:
+        return auth
+
+    if profile_id not in chasemapper_config.get("profiles", {}):
+        return flask.jsonify({"error": "unknown profile"}), 404
+
+    restored = geofence_mod.restore_latest(geofence_store, profile_id)
+    if not restored:
+        return flask.jsonify({"error": "no recoverable geofence in trash."}), 404
+
+    geofence_mod.save_store(geofence_store_path, geofence_store)
+    geofence_mod.attach_to_profiles(chasemapper_config, geofence_store)
+    _broadcast_geofence(profile_id)
+    logging.info(
+        "Geofence restored for profile '%s' (%d vertices)"
+        % (profile_id, len(restored["polygon"]))
     )
-    return flask.jsonify({"ok": True})
+    return flask.jsonify({
+        "ok": True,
+        "geofence": restored,
+        "has_trash": geofence_mod.has_trash(geofence_store, profile_id),
+    })
 
 
 def flask_emit_event(event_name="none", data={}):
@@ -1686,6 +1767,10 @@ if __name__ == "__main__":
         "geofences.json",
     )
     geofence_store = geofence_mod.load_store(geofence_store_path)
+    # Drop trash entries older than the 2-day TTL on startup so
+    # has_trash reflects only actually-recoverable geofences.
+    if geofence_mod.prune_trash(geofence_store):
+        geofence_mod.save_store(geofence_store_path, geofence_store)
     geofence_mod.attach_to_profiles(chasemapper_config, geofence_store)
 
     # Copy out the predictor settings to another dictionary.
