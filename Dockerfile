@@ -29,6 +29,17 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # requirements.txt and the cusf wrapper below. Skipping this also means
 # editing python files won't bust the pip-install cache layer.
 
+# Strip bytecode, test suites, and debug symbols before copying to final stage.
+# tests/ dirs in numpy/scipy/etc. can be 100+ MB combined.
+# Stripping .so debug symbols typically saves another 50-200 MB.
+# Ordered BEFORE the cusf build so that bumping CUSF_SHA doesn't invalidate
+# this layer — strip only depends on /root/.local from pip install above.
+RUN find /root/.local -name "*.pyc" -delete && \
+  find /root/.local -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true && \
+  find /root/.local -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
+  find /root/.local -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
+  find /root/.local -name "*.so" -exec strip --strip-unneeded {} + 2>/dev/null || true
+
 # Download and build cusf_predictor_wrapper. Pinned to a specific commit SHA
 # rather than `master.zip` for reproducibility, supply-chain hygiene, and
 # resilience against upstream branch renames or force-pushes. Renovate watches
@@ -44,15 +55,6 @@ RUN unzip /root/cusf.zip -d /root && \
   cd /root/cusf_predictor_wrapper/src/build && \
   cmake .. && \
   make
-
-# Strip bytecode, test suites, and debug symbols before copying to final stage.
-# tests/ dirs in numpy/scipy/etc. can be 100+ MB combined.
-# Stripping .so debug symbols typically saves another 50-200 MB.
-RUN find /root/.local -name "*.pyc" -delete && \
-  find /root/.local -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true && \
-  find /root/.local -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
-  find /root/.local -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
-  find /root/.local -name "*.so" -exec strip --strip-unneeded {} + 2>/dev/null || true
 
 # -------------------------
 # The application container
