@@ -76,6 +76,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   apt-get install -y --no-install-recommends \
   libeccodes0 \
   libgeos-c1v5 \
+  libopenblas0 \
   tini
 
 # Create a non-root user to run the application.
