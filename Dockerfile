@@ -14,7 +14,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   apt-get install -y --no-install-recommends \
   cmake \
   libgeos-dev \
-  libatlas-base-dev
+  libatlas-base-dev \
+  libopenblas-dev \
+  gfortran
 
 # Copy in requirements.txt.
 COPY requirements.txt /root/chasemapper/requirements.txt
@@ -23,7 +25,7 @@ COPY requirements.txt /root/chasemapper/requirements.txt
 # builds — speeds up local rebuilds without affecting the final image size.
 RUN --mount=type=cache,target=/root/.cache/pip \
   pip3 install --user --break-system-packages --no-warn-script-location \
-  --ignore-installed -r /root/chasemapper/requirements.txt
+  --ignore-installed --no-binary=numpy -r /root/chasemapper/requirements.txt
 
 # NOTE: removed `COPY . /root/chasemapper` — the build stage only needs
 # requirements.txt and the cusf wrapper below. Skipping this also means
