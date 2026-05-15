@@ -76,6 +76,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   apt-get install -y --no-install-recommends \
   libeccodes0 \
   libgeos-c1v5 \
+  libglib2.0-0 \
   libopenblas0 \
   tini
 
@@ -102,8 +103,12 @@ COPY --chown=chasemapper:chasemapper . /opt/chasemapper
 WORKDIR /opt/chasemapper
 
 # Persist the airspace/TFR cache across container restarts.
-RUN mkdir -p /opt/chasemapper/cache/airspace && \
-  chown chasemapper:chasemapper /opt/chasemapper/cache /opt/chasemapper/cache/airspace
+RUN mkdir -p /opt/chasemapper/cache/airspace /opt/chasemapper/log_files /opt/chasemapper/gfs && \
+  chown chasemapper:chasemapper \
+    /opt/chasemapper/cache \
+    /opt/chasemapper/cache/airspace \
+    /opt/chasemapper/log_files \
+    /opt/chasemapper/gfs
 VOLUME ["/opt/chasemapper/cache"]
 
 # Ensure scripts from Python packages are in PATH.
