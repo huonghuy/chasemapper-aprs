@@ -5,7 +5,7 @@ cusfpredict @ git+https://github.com/darksidelemm/cusf_predictor_wrapper.git ; p
 flask
 flask-socketio
 lxml
-numpy
+numpy<2
 python-dateutil
 pytz
 requests
