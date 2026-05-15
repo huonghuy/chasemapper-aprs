@@ -26,9 +26,11 @@ from threading import Thread
 from datetime import datetime, timedelta, timezone
 from dateutil.parser import parse
 
-# aprslib has an unfixed upstream invalid escape sequence in its regex literal.
-# Filter it once at startup so the noise doesn't drown out real warnings.
+# Suppress noise from third-party libraries we don't control:
+#  - aprslib: unfixed invalid escape sequence in a regex literal
+#  - cusfpredict: still uses datetime.utcnow() (deprecated in Python 3.12+)
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"aprslib(\..*)?")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"cusfpredict(\..*)?")
 
 from chasemapper import __version__ as CHASEMAPPER_VERSION
 from chasemapper.config import *
