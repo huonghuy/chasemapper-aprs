@@ -154,7 +154,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s:%(message)s", level=logging.INFO
     )
 
-    _now = datetime.datetime.utcnow()
+    _now = datetime.datetime.now(datetime.timezone.utc)
 
     # Regular complete-flightpath prediction
     _data = get_tawhiri_prediction(

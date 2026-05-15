@@ -231,7 +231,8 @@ def _refresh_layer(layer):
         raise ValueError("unknown layer: " + layer)
 
     if not isinstance(geo, dict) or geo.get("type") != "FeatureCollection":
-        raise ValueError("unexpected response shape for " + layer)
+        snippet = json.dumps(geo)[:300] if isinstance(geo, (dict, list)) else repr(geo)[:300]
+        raise ValueError("unexpected response shape for {}: {}".format(layer, snippet))
 
     _write_layer(layer, geo, fetched_at)
     logging.info(

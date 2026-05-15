@@ -15,6 +15,7 @@ if sys.version_info < (3, 6):
 import json
 import logging
 import math
+import warnings
 import flask
 from flask_socketio import SocketIO
 import os.path
@@ -22,8 +23,12 @@ import pytz
 import time
 import traceback
 from threading import Thread
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dateutil.parser import parse
+
+# aprslib has an unfixed upstream invalid escape sequence in its regex literal.
+# Filter it once at startup so the noise doesn't drown out real warnings.
+warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"aprslib(\..*)?")
 
 from chasemapper import __version__ as CHASEMAPPER_VERSION
 from chasemapper.config import *
@@ -1014,7 +1019,7 @@ def initPredictor():
             else:
                 # Check model contains data to at least 4 hours into the future.
                 (_model_start, _model_end) = available_gfs(pred_settings["gfs_path"])
-                _model_now = datetime.utcnow() + timedelta(0, 60 * 60 * 4)
+                _model_now = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(0, 60 * 60 * 4)
                 if (_model_now < _model_start) or (_model_now > _model_end):
                     # No suitable GFS data!
                     logging.error("GFS Data in directory does not cover now!")
@@ -1233,7 +1238,7 @@ def udp_listener_summary_callback(data):
     else:
         # Otherwise use the current UTC time.
 
-        output["time_dt"] = pytz.utc.localize(datetime.utcnow())
+        output["time_dt"] = datetime.now(timezone.utc)
 
     # Copy out any extra fields that we want to pass on to the GUI.
     for _field in EXTRA_FIELDS:
@@ -1261,7 +1266,7 @@ def udp_listener_car_callback(data):
         _alt = 0.0
 
     _comment = "CAR"
-    _time_dt = pytz.utc.localize(datetime.utcnow())
+    _time_dt = datetime.now(timezone.utc)
 
     logging.debug("Car Position: %.5f, %.5f" % (_lat, _lon))
 
@@ -1688,7 +1693,7 @@ class WebHandler(logging.Handler):
                 # Convert log record into a dictionary
                 log_data = {
                     "level": record.levelname,
-                    "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "msg": record.msg,
                 }
                 # Emit to all socket.io clients

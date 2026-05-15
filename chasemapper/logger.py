@@ -9,7 +9,6 @@ import datetime
 import json
 import logging
 import os
-import pytz
 import time
 from threading import Thread, Lock
 
@@ -34,7 +33,7 @@ class ChaseLogger(object):
         else:
             # Otherwise, create a filename based on the current time.
             self.filename = os.path.join(
-                log_dir, datetime.datetime.utcnow().strftime("%Y%m%d-%H%MZ.log")
+                log_dir, datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%MZ.log")
             )
 
         self.file_lock = Lock()
@@ -69,7 +68,7 @@ class ChaseLogger(object):
         """
 
         data["log_type"] = "CAR POSITION"
-        data["log_time"] = pytz.utc.localize(datetime.datetime.utcnow()).isoformat()
+        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # Convert the input datetime object into a string.
         data["time"] = data["time"].isoformat()
@@ -85,7 +84,7 @@ class ChaseLogger(object):
         """
 
         data["log_type"] = "BALLOON TELEMETRY"
-        data["log_time"] = pytz.utc.localize(datetime.datetime.utcnow()).isoformat()
+        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # Convert the input datetime object into a string.
         data["time"] = data["time_dt"].isoformat()
@@ -102,7 +101,7 @@ class ChaseLogger(object):
         """ Log a prediction run """
 
         data["log_type"] = "PREDICTION"
-        data["log_time"] = pytz.utc.localize(datetime.datetime.utcnow()).isoformat()
+        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # Add it to the queue if we are running.
         if self.input_processing_running:
@@ -114,7 +113,7 @@ class ChaseLogger(object):
         """ Log a packet of bearing data """
 
         data["log_type"] = "BEARING"
-        data["log_time"] = pytz.utc.localize(datetime.datetime.utcnow()).isoformat()
+        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         # Add it to the queue if we are running.
         if self.input_processing_running:

@@ -159,7 +159,7 @@ class SPOTListener:
                 continue
             feed["last_unix_time"] = ut
             new_count += 1
-            packet_time = datetime.datetime.utcfromtimestamp(ut).strftime("%H:%M:%S")
+            packet_time = datetime.datetime.fromtimestamp(ut, tz=datetime.timezone.utc).strftime("%H:%M:%S")
             try:
                 self.summary_callback({
                     "type": "PAYLOAD_SUMMARY",

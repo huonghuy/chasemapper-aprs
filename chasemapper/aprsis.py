@@ -192,9 +192,9 @@ class APRSISListener:
 
                 ts = packet.get("timestamp")
                 if ts:
-                    packet_time = datetime.datetime.utcfromtimestamp(ts).strftime("%H:%M:%S")
+                    packet_time = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%H:%M:%S")
                 else:
-                    packet_time = datetime.datetime.utcnow().strftime("%H:%M:%S")
+                    packet_time = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
 
                 self.summary_callback(
                     {
