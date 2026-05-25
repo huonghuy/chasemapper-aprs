@@ -1,0 +1,36 @@
+services:
+  chasemapper:
+    container_name: chasemapper
+    image: ghcr.io/huonghuy/chasemapper-aprs:master
+    # To build locally instead of pulling, comment `image:` above and uncomment:
+    # build: .
+    restart: always
+    tty: true
+    # network_mode: host lets the container receive UDP broadcasts from
+    # telemetry decoders (Horus-GUI, lora_gateway, etc.) on the host network.
+    # On Windows/Mac (or if you don't need UDP ingest), remove this line and
+    # use a `ports:` mapping instead — see commented block below.
+    network_mode: host
+    # ports:
+    #   - "5001:5001"
+    env_file:
+      - .env
+    volumes:
+      # Your edited copy of horusmapper.cfg. Read-only — the container
+      # never writes to it.
+      - ./horusmapper.cfg:/opt/chasemapper/horusmapper.cfg:ro
+      # Optional: offline map tile cache. Only needed if you use offline maps.
+      # - ./Maps:/opt/chasemapper/Maps
+      # GFS weather data for offline predictions. Named volume so it survives
+      # container rebuilds.
+      - chasemapper_gfs:/opt/chasemapper/gfs
+      # Flight logs, written per-launch.
+      - chasemapper_logs:/opt/chasemapper/log_files/
+      # Airspace + parcel caches. Survives rebuilds so you don't re-hit FAA
+      # on every container restart.
+      - chasemapper_cache:/opt/chasemapper/cache
+
+volumes:
+  chasemapper_gfs:
+  chasemapper_logs:
+  chasemapper_cache:

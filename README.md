@@ -24,8 +24,73 @@ Chasemapper is intended to be run on a 'headless' machine like a Raspberry Pi an
 ### Contacts
 * [Huy Huong](https://github.com/huonghuy) - huyhuong@umd.edu
 
-## Docker Install
-The fastest (and most recommended) way to get chasemapper up and running is to use the pre-built docker container. Information on using this is available here: https://github.com/projecthorus/chasemapper/wiki/Docker
+## Regional Limitations
+
+A few overlays are hardcoded to the mid-Atlantic and will be empty
+or unavailable outside that region:
+
+* **FAA airspace + TFR overlays** — limited to the bounding box covering
+  MD/PA/DE/VA/WV (see `REGION_BBOX` in `chasemapper/airspace_cache.py`).
+  Toggling airspace on outside that area shows nothing.
+* **Parcel lookup** — uses the Maryland statewide parcel service and
+  only returns results inside MD.
+
+Everything else (APRS-IS, SPOT, predictions, maps) is location-agnostic.
+
+## Quickstart (Docker)
+
+The fastest path from zero to a running map.
+
+    git clone https://github.com/huonghuy/chasemapper-aprs.git
+    cd chasemapper-aprs
+
+    # 1. Create your config
+    cp horusmapper.cfg.example horusmapper.cfg
+    # Edit horusmapper.cfg — set at least:
+    #   - default_lat / default_lon (map center)
+    #   - your APRS-IS profile (callsigns for cars + balloons)
+
+    # 2. Create your .env (see "Environment Variables" section below)
+    touch .env
+    # If you're not exposing this publicly, you can leave .env empty —
+    # the SPOT + RECOVERY_API_KEY features just stay disabled.
+
+    # 3. Create a docker-compose.yml from the example
+    cp docker-compose.yml.example docker-compose.yml
+    # Edit if you want to build locally instead of pulling the image,
+    # or to add an offline map tile mount.
+
+    # 4. Start it
+    docker compose up -d
+
+    # 5. Open the UI
+    # http://<host-ip>:5001/
+
+To see logs: `docker compose logs -f chasemapper`. To stop:
+`docker compose down`. To pull a newer build:
+`docker compose pull && docker compose up -d`.
+
+### Expected startup noise
+
+These messages appear on a fresh boot and are **harmless** — they are
+not errors with your setup:
+
+* `GFS Data in directory does not cover now!` — no offline GFS model
+  downloaded yet. Online predictions still work via SondeHub. If you
+  want offline predictions, click "Download Model" in the Settings tab.
+* `Unable to read in last position` — no prior flight log to resume
+  from. Disappears after the first received packet.
+* `SPOT: <feed> skipped — env var ... is not set` — SPOT feed IDs not
+  configured in `.env`. Only matters if you're tracking a SPOT Trace.
+* `SyntaxWarning: invalid escape sequence '\!'` from `aprslib` — a
+  cosmetic warning in an upstream library, not our code.
+
+## Docker Install (detailed)
+The above Quickstart covers the common case. If you want background on
+the upstream Docker setup (advanced volume mounts, offline mapping,
+GFS download flags), see: https://github.com/projecthorus/chasemapper/wiki/Docker
+Note that the upstream wiki predates the APRS-IS / SPOT / airspace /
+parcel features in this fork.
 
 
 ## 'Local' Install - Dependencies
@@ -33,21 +98,25 @@ If you are using Docker, you can skip this section.
 
 **Note: ChaseMapper requires Python 3.6 or newer.**
 
-On a Raspbian/Ubuntu/Debian system, you can get most of the required dependencies using:
+On a Raspbian/Ubuntu/Debian system, install the system-level build deps:
 ```
-$ sudo apt-get install git python3-numpy python3-requests python3-serial python3-dateutil python3-flask python3-pip libatlas3-base libgfortran5 libopenblas-dev
+$ sudo apt-get install git python3-pip libatlas3-base libgfortran5 libopenblas-dev libgeos-dev
 ```
-On other OSes the required packages should be named something similar. 
+On other OSes the required packages should be named something similar.
 
-You also need flask-socketio (>=5.0.0) and pytz, which can be installed using pip:
-```
-$ sudo pip3 install flask-socketio pytz
-```
-
-You can then clone this repository with:
+Clone the repo:
 ```
 $ git clone https://github.com/huonghuy/chasemapper-aprs.git
+$ cd chasemapper-aprs
 ```
+
+Install the Python dependencies from `requirements.txt` (covers
+flask, flask-socketio, aprslib, pytz, requests, numpy, etc.):
+```
+$ pip3 install -r requirements.txt
+```
+A virtualenv is recommended if you don't want to install into the
+system Python.
 
 ## Telemetry Sources
 To use the map, you need some kind of data to plot on it! The mapping backend accepts telemetry data in a few formats:
@@ -56,7 +125,7 @@ To use the map, you need some kind of data to plot on it! The mapping backend ac
 * 'OziMux' messages, via UDP broadcast in a simple CSV format [described here](https://github.com/projecthorus/oziplotter/wiki/3---Data-Sources#3---oziplotter-data-inputs).
   * Pi-in-the-Sky's [lora_gateway](https://github.com/PiInTheSky/lora-gateway) - Using the `OziPort=8942` configuration option.
 
-## .env Setup
+## Environment Variables (.env)
 
 Chasemapper reads secrets from environment variables to keep them out of
 the committed config. Create a `.env` file in the repo root (already

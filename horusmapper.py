@@ -1698,17 +1698,16 @@ class WebHandler(logging.Handler):
 
     def emit(self, record):
         """ Emit a log message via SocketIO """
-        # Deal with log records with no content.
-        if record.msg:
-            if "socket.io" not in record.msg:
-                # Convert log record into a dictionary
-                log_data = {
-                    "level": record.levelname,
-                    "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "msg": record.msg,
-                }
-                # Emit to all socket.io clients
-                socketio.emit("log_event", log_data, namespace="/chasemapper")
+        # record.getMessage() applies record.args to the format string — without it,
+        # lazy log calls like logging.info("foo %s", x) reach the client unformatted.
+        msg = record.getMessage()
+        if msg and "socket.io" not in msg:
+            log_data = {
+                "level": record.levelname,
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "msg": msg,
+            }
+            socketio.emit("log_event", log_data, namespace="/chasemapper")
 
 
 if __name__ == "__main__":
