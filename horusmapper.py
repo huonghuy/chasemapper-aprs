@@ -201,6 +201,15 @@ def flask_airspace_status():
     return flask.jsonify(airspace_cache.get_status())
 
 
+@app.route("/airspace/refresh", methods=["POST"])
+def flask_airspace_refresh():
+    auth = _check_recovery_auth()
+    if auth is not None:
+        return auth
+    result = airspace_cache.force_refresh_all()
+    return flask.jsonify(result)
+
+
 @app.route("/airspace/<layer>")
 def flask_airspace_layer(layer):
     auth = _check_recovery_auth()

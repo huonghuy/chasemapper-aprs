@@ -60,6 +60,8 @@ _CLASS_LOCAL_TYPE = {
 
 _started = False
 _start_lock = threading.Lock()
+_refresh_lock = threading.Lock()
+_refresh_in_progress = False
 
 
 def _ensure_cache_dir():
@@ -285,6 +287,36 @@ def get_status():
             "stale": stale,
         }
     return out
+
+
+def force_refresh_all():
+    """Re-fetch every layer from FAA now. Runs layers in parallel; serialised
+    with a global lock so concurrent button presses coalesce into one round.
+    Returns a result dict with per-layer success flags and the post-refresh status."""
+    global _refresh_in_progress
+    with _refresh_lock:
+        if _refresh_in_progress:
+            return {"already_running": True, "status": get_status()}
+        _refresh_in_progress = True
+
+    try:
+        results = {}
+        threads = []
+
+        def worker(layer):
+            results[layer] = _try_refresh(layer)
+
+        for layer in LAYERS:
+            t = threading.Thread(target=worker, args=(layer,), daemon=True)
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join(timeout=REQUEST_TIMEOUT + 5)
+
+        return {"already_running": False, "results": results, "status": get_status()}
+    finally:
+        _refresh_in_progress = False
 
 
 def start_background_refresh():

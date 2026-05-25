@@ -206,6 +206,50 @@
         });
     }
 
+    function refreshAirspaceFromFAA() {
+        var btn = $("airspace-refresh-btn");
+        if (!btn || btn.disabled) return;
+        btn.disabled = true;
+        var originalText = btn.textContent;
+        btn.textContent = "Refreshing…";
+        setStatus("airspace-status", "Refreshing from FAA…");
+
+        fetch("/airspace/refresh", { method: "POST" })
+            .then(function (r) {
+                if (!r.ok) throw new Error("HTTP " + r.status);
+                return r.json();
+            })
+            .then(function (data) {
+                if (data.already_running) {
+                    setStatus("airspace-status", "A refresh is already in progress.");
+                    return;
+                }
+                // Clear cached payloads + drawn layers so syncAirspace re-fetches the new data.
+                AIRSPACE_LAYERS.forEach(function (layer) {
+                    delete state.airspaceData[layer];
+                    if (state.airspaceLayers[layer]) {
+                        state.map.removeLayer(state.airspaceLayers[layer]);
+                        delete state.airspaceLayers[layer];
+                    }
+                });
+                syncAirspace();
+                var results = data.results || {};
+                var failed = AIRSPACE_LAYERS.filter(function (l) { return results[l] === false; });
+                if (failed.length) {
+                    setStatus("airspace-status", "Refreshed (failed: " + failed.join(", ") + ")", true);
+                } else {
+                    setStatus("airspace-status", "Refreshed from FAA.");
+                }
+            })
+            .catch(function (e) {
+                setStatus("airspace-status", "Refresh failed: " + e.message, true);
+            })
+            .then(function () {
+                btn.disabled = false;
+                btn.textContent = originalText;
+            });
+    }
+
     function clearParcels() {
         if (state.parcelLayer) {
             state.map.removeLayer(state.parcelLayer);
@@ -296,6 +340,8 @@
             var el = $("toggle-" + layer.replace("_", "-"));
             if (el) el.addEventListener("change", syncAirspace);
         });
+        var refreshBtn = $("airspace-refresh-btn");
+        if (refreshBtn) refreshBtn.addEventListener("click", refreshAirspaceFromFAA);
 
         $("toggle-parcels").addEventListener("change", function () {
             if (this.checked) {
