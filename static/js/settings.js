@@ -12,6 +12,10 @@ var parachute_min_alt = 300; // Show the balloon as a 'landed' payload below thi
 var car_bad_age = 5.0;
 var payload_bad_age = 30.0;
 
+// Maximum zoom level to allow for offline tile layers. If the tile set does not
+// have native tiles this far in, Leaflet will scale the highest available tiles.
+var offline_tile_layer_max_zoom = 20;
+
 
 // Chase Mapper Configuration Parameters.
 // These are dummy values which will be populated on startup.
@@ -29,9 +33,26 @@ var chase_config = {
     pred_model: 'Disabled',
     show_abort: true, // Show a prediction of an 'abort' paths (i.e. if the balloon bursts *now*)
     offline_tile_layers: [],
+    offline_tile_layer_max_native_zoom: {},
+    kml_overlays: [],
     habitat_call: 'N0CALL'
 };
 
+
+function getOfflineTileLayerOptions(layer_name){
+    var _options = {
+        maxZoom: offline_tile_layer_max_zoom
+    };
+
+    if (
+        chase_config.hasOwnProperty("offline_tile_layer_max_native_zoom") &&
+        chase_config.offline_tile_layer_max_native_zoom.hasOwnProperty(layer_name)
+    ){
+        _options.maxNativeZoom = chase_config.offline_tile_layer_max_native_zoom[layer_name];
+    }
+
+    return _options;
+}
 
 // Refresh a "(N ft)" hint next to a meters input. Reads the live
 // input value (so it updates as the user types), converts to feet,
@@ -208,6 +229,11 @@ function clientSettingsUpdate(){
     var _habitat_update_rate = parseInt($('#habitatUpdateRate').val());
     if (isNaN(_habitat_update_rate) == false){
         chase_config.habitat_update_rate = _habitat_update_rate
+    }
+
+    var _bearing_confidence_threshold = parseFloat($('#bearingConfidenceThreshold').val());
+    if (isNaN(_bearing_confidence_threshold) == false){
+        chase_config.doa_confidence_threshold = _bearing_confidence_threshold;
     }
 
     // Float (GHOUL) settings — global, picked up server-side by the

@@ -92,6 +92,9 @@ pred_settings = {}
 # Offline map settings, again, not editable by the client.
 map_settings = {"tile_server_enabled": False}
 
+# KML overlay settings, not editable by the client.
+kml_overlay_settings = {}
+
 # Payload data Stores
 current_payloads = {}  #  Archive data which will be passed to the web client
 current_payload_tracks = (
@@ -136,6 +139,26 @@ def flask_oclock():
     """ Render bearing o'clock page """
     return flask.render_template("oclock.html")
 
+
+def split_kml_overlay_settings(overlays):
+    """ Split configured KML overlays into public config and private paths. """
+    _public_overlays = []
+    _overlay_settings = {}
+
+    for _overlay in overlays:
+        _overlay_id = str(_overlay["id"])
+        _overlay_settings[_overlay_id] = _overlay
+        _public_overlays.append(
+            {
+                "id": _overlay_id,
+                "name": _overlay["name"],
+                "visible": _overlay["visible"],
+            }
+        )
+
+    return _public_overlays, _overlay_settings
+
+
 @app.route("/get_telemetry_archive")
 def flask_get_telemetry_archive():
     return json.dumps(current_payloads)
@@ -177,6 +200,27 @@ def flask_server_tiles(filename):
         return flask.send_from_directory(map_settings["tile_server_path"], filename)
     else:
         flask.abort(404)
+
+
+@app.route("/overlays/kml/<overlay_id>")
+def flask_server_kml_overlay(overlay_id):
+    """ Serve up a configured KML overlay file. """
+    global kml_overlay_settings
+
+    _overlay = kml_overlay_settings.get(str(overlay_id))
+    if _overlay is None:
+        flask.abort(404)
+
+    _overlay_path = _overlay["path"]
+    if not os.path.isfile(_overlay_path):
+        logging.error("Configured KML overlay does not exist: %s" % _overlay_path)
+        flask.abort(404)
+
+    return flask.send_from_directory(
+        os.path.dirname(_overlay_path),
+        os.path.basename(_overlay_path),
+        mimetype="application/vnd.google-earth.kml+xml",
+    )
 
 
 # Recovery overlays (FAA airspace, TFRs, MD parcels). Auth gated when
@@ -462,6 +506,18 @@ def sync_bearing_store_time_seq():
     )
 
 
+def sync_bearing_store_confidence_threshold():
+    """Keep the bearing handler aligned with server-authoritative confidence settings."""
+    global bearing_store, chasemapper_config
+
+    if bearing_store is None:
+        return
+
+    bearing_store.update_confidence_threshold(
+        chasemapper_config["doa_confidence_threshold"]
+    )
+
+
 @socketio.on("client_settings_update", namespace="/chasemapper")
 def client_settings_update(data):
     global chasemapper_config, online_uploader
@@ -494,8 +550,12 @@ def client_settings_update(data):
     # Overwrite local config data with data from the client.
     chasemapper_config = data
     chasemapper_config.update(_time_seq_state)
+    chasemapper_config.setdefault(
+        "doa_confidence_threshold", default_config["doa_confidence_threshold"]
+    )
 
     sync_bearing_store_time_seq()
+    sync_bearing_store_confidence_threshold()
 
     if _predictor_change == "restart":
         # Wait until any current predictions have finished.
@@ -574,6 +634,16 @@ def time_seq_update(data):
 
     if "enabled" in data:
         chasemapper_config["time_seq_enabled"] = bool(data["enabled"])
+
+    if "times" in data:
+        try:
+            _times = [float(_time) for _time in data["times"]]
+        except (TypeError, ValueError):
+            _times = None
+
+        if _times is not None and len(_times) == len(chasemapper_config["time_seq_times"]):
+            chasemapper_config["time_seq_times"] = _times
+            chasemapper_config["time_seq_enabled"] = True
 
     if "slot" in data:
         try:
@@ -1357,9 +1427,10 @@ def udp_listener_bearing_callback(data):
     global bearing_store, bearing_mode, chase_logger
 
     if bearing_store != None:
-        bearing_store.add_bearing(data)
-        bearing_mode = True
-        if chase_logger:
+        _bearing_stored = bearing_store.add_bearing(data)
+        if _bearing_stored:
+            bearing_mode = True
+        if _bearing_stored and chase_logger:
             chase_logger.add_bearing(data)
 
 
@@ -1773,6 +1844,11 @@ if __name__ == "__main__":
     # Add in Chasemapper version information.
     chasemapper_config["version"] = CHASEMAPPER_VERSION
 
+    # Keep overlay filesystem paths server-side only.
+    chasemapper_config["kml_overlays"], kml_overlay_settings = split_kml_overlay_settings(
+        chasemapper_config["kml_overlays"]
+    )
+
     # Load per-profile geofences (HAB Bounder KML uploads). The sidecar
     # file lives next to the active config so multi-config setups stay
     # isolated. Each profile dict gets a "geofence" key (None if none
@@ -1810,6 +1886,7 @@ if __name__ == "__main__":
         time_seq_times=chasemapper_config["time_seq_times"],
         time_seq_active=chasemapper_config["time_seq_active"],
         time_seq_cycle=chasemapper_config["time_seq_cycle"],
+        doa_confidence_threshold=chasemapper_config["doa_confidence_threshold"],
     )
 
     # Set speed gate for car position object
