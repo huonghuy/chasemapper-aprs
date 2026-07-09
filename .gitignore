@@ -29,6 +29,6 @@ wheels/
 .idea/
 .env
 *.md
-/.rtk
-/.codegraph
+.rtk/
+.codegraph/
 CLAUDE.md
