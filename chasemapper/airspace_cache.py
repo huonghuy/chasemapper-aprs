@@ -300,7 +300,9 @@ def force_refresh_all():
         _refresh_in_progress = True
 
     try:
-        results = {}
+        # Pre-populate so a worker that outlives the join timeout still
+        # leaves a (False) entry rather than a missing key.
+        results = {layer: False for layer in LAYERS}
         threads = []
 
         def worker(layer):

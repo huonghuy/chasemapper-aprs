@@ -20,6 +20,7 @@ Design notes:
 - Atomic write (tmp + replace) so a crash mid-write can't corrupt cache.
 """
 
+import atexit
 import json
 import logging
 import os
@@ -148,6 +149,15 @@ def get_points():
         return list(_points)
 
 
+def flush():
+    """Write the current buffer to disk immediately (bypasses the throttle).
+    Registered as an atexit handler so the last WRITE_INTERVAL_SEC worth of
+    points isn't lost on shutdown."""
+    with _lock:
+        if _points:
+            _flush_locked()
+
+
 def clear():
     with _lock:
         _points.clear()
@@ -181,4 +191,5 @@ def start():
     _ensure_dir()
     with _lock:
         _load_from_disk()
+    atexit.register(flush)
     threading.Thread(target=_rollover_loop, daemon=True).start()

@@ -12,6 +12,7 @@ if sys.version_info < (3, 6):
     print("CRITICAL - chasemapper requires Python 3.6 or newer!")
     sys.exit(1)
 
+import hmac
 import json
 import logging
 import math
@@ -60,7 +61,10 @@ from chasemapper import geofence as geofence_mod
 
 # Define Flask Application, and allow automatic reloading of templates for dev work
 app = flask.Flask(__name__)
-app.config["SECRET_KEY"] = "secret!"
+app.config["SECRET_KEY"] = os.urandom(24).hex()
+# Reject oversized request bodies before route handlers buffer them.
+# Largest legitimate upload is a geofence KML (capped at 5 MB in the route).
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
 
@@ -233,7 +237,8 @@ RECOVERY_API_KEY = os.environ.get("RECOVERY_API_KEY", "")
 def _check_recovery_auth():
     if not RECOVERY_API_KEY:
         return None
-    if flask.request.headers.get("X-Recovery-Key") != RECOVERY_API_KEY:
+    _supplied = flask.request.headers.get("X-Recovery-Key", "")
+    if not hmac.compare_digest(_supplied, RECOVERY_API_KEY):
         return flask.jsonify({"error": "forbidden"}), 403
     return None
 
@@ -492,21 +497,6 @@ def sync_bearing_store_time_seq():
     )
 
 
-def sync_bearing_store_time_seq():
-    """Keep the bearing handler aligned with server-authoritative time-sequence settings."""
-    global bearing_store, chasemapper_config
-
-    if bearing_store is None:
-        return
-
-    bearing_store.update_time_sequence(
-        enabled=chasemapper_config["time_seq_enabled"],
-        times=chasemapper_config["time_seq_times"],
-        active=chasemapper_config["time_seq_active"],
-        cycle=chasemapper_config["time_seq_cycle"],
-    )
-
-
 def sync_bearing_store_confidence_threshold():
     """Keep the bearing handler aligned with server-authoritative confidence settings."""
     global bearing_store, chasemapper_config
@@ -521,7 +511,7 @@ def sync_bearing_store_confidence_threshold():
 
 @socketio.on("client_settings_update", namespace="/chasemapper")
 def client_settings_update(data):
-    global chasemapper_config, online_uploader
+    global chasemapper_config, online_uploader, predictor
 
     _predictor_change = "none"
     if (chasemapper_config["pred_enabled"] == False) and (data["pred_enabled"] == True):
@@ -598,7 +588,8 @@ def client_settings_update(data):
                 )
 
     elif _habitat_change == "stop":
-        online_uploader.close()
+        if online_uploader != None:
+            online_uploader.close()
         online_uploader = None
 
     # Update the habitat uploader with a new update rate, if one has changed.
@@ -748,6 +739,7 @@ def handle_new_payload_position(data, log_position=True):
 
     else:
         _vel_v = 0.0
+        _speed = 0.0
         _ttl = ""
 
     # Now update the main telemetry store.
@@ -1081,7 +1073,7 @@ def run_prediction():
                     descent_mode=_current_pos["is_descending"],
                 )
 
-            if len(_pred_path) > 1:
+            if len(_abort_pred_path) > 1:
                 # Valid Prediction!
                 _abort_pred_path.insert(0, _current_pos_list)
                 # Convert from predictor output format to a polyline.
@@ -1094,7 +1086,7 @@ def run_prediction():
 
                 _abort_pred_ok = True
                 logging.info(
-                    "Abort Prediction Updated, %d data points." % len(_pred_path)
+                    "Abort Prediction Updated, %d data points." % len(_abort_pred_path)
                 )
             else:
                 current_payloads[_payload]["abort_path"] = []
@@ -1260,6 +1252,10 @@ def clear_car_data(data):
     global car_track
     logging.warning("Client requested all chase car data be cleared.")
     car_track = GenericTrack()
+    # Re-apply configured gating thresholds, which the fresh GenericTrack
+    # would otherwise reset to its defaults.
+    car_track.heading_gate_threshold = chasemapper_config["car_speed_gate"]
+    car_track.turn_rate_threshold = chasemapper_config["turn_rate_threshold"]
     car_track_cache.clear()
 
 
@@ -1731,7 +1727,7 @@ def _aprsis_state():
         "active_car": p.get("aprsis_active_car_callsign", ""),
         "car_callsigns": p.get("aprsis_car_callsigns", []),
         "balloon_callsigns": p.get("aprsis_balloon_callsigns", []),
-        "connected": aprsis_listener is not None,
+        "connected": (aprsis_listener is not None) and aprsis_listener.connected,
     }
 
 
@@ -1747,6 +1743,9 @@ def aprsis_set_car_callsign(data):
         aprsis_listener.set_active_car_callsign(cs)
     logging.info("APRS-IS active car callsign: %s (profile %s)" % (cs, p.get("name")))
     flask_emit_event("aprsis_state", _aprsis_state())
+    # Also push the full settings so client-side config copies stay in sync;
+    # otherwise a later client_settings_update would clobber this change.
+    flask_emit_event("server_settings_update", chasemapper_config)
 
 
 @socketio.on("aprsis_add_car_callsign", namespace="/chasemapper")
@@ -1761,6 +1760,7 @@ def aprsis_add_car_callsign(data):
     if aprsis_listener is not None:
         aprsis_listener.add_car_callsign(cs)
     flask_emit_event("aprsis_state", _aprsis_state())
+    flask_emit_event("server_settings_update", chasemapper_config)
 
 
 @socketio.on("aprsis_add_balloon_callsign", namespace="/chasemapper")
@@ -1775,6 +1775,7 @@ def aprsis_add_balloon_callsign(data):
     if aprsis_listener is not None:
         aprsis_listener.add_balloon_callsign(cs)
     flask_emit_event("aprsis_state", _aprsis_state())
+    flask_emit_event("server_settings_update", chasemapper_config)
 
 
 @socketio.on("aprsis_remove_callsign", namespace="/chasemapper")
@@ -1796,6 +1797,7 @@ def aprsis_remove_callsign(data):
         if aprsis_listener is not None and new_active:
             aprsis_listener.set_active_car_callsign(new_active)
     flask_emit_event("aprsis_state", _aprsis_state())
+    flask_emit_event("server_settings_update", chasemapper_config)
 
 
 @socketio.on("device_position", namespace="/chasemapper")
