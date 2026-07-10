@@ -40,6 +40,10 @@ class APRSISListener:
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
+        # True while a login has been sent on a live socket; used by the
+        # UI status display, so it reflects the actual connection rather
+        # than just "listener exists".
+        self.connected = False
 
     def start(self):
         self._running = True
@@ -124,6 +128,7 @@ class APRSISListener:
                 sock.sendall(login_line.encode())
 
                 logging.info("APRS-IS: connected and filter sent")
+                self.connected = True
 
                 fh = sock.makefile("r", encoding="latin-1")
                 while self._running:
@@ -137,19 +142,22 @@ class APRSISListener:
                     if line.startswith("#"):
                         logging.info("APRS-IS server msg: %s" % line)
                         continue
-                    logging.info("APRS-IS RAW: %s" % line)
+                    logging.debug("APRS-IS RAW: %s" % line)
                     self._handle_line(line)
 
             except Exception as e:
                 if self._running:
                     logging.error("APRS-IS: connection error: %s" % e)
             finally:
+                self.connected = False
                 with self._lock:
+                    _sock = self._sock
                     self._sock = None
-                try:
-                    sock.close()
-                except Exception:
-                    pass
+                if _sock is not None:
+                    try:
+                        _sock.close()
+                    except Exception:
+                        pass
 
             if self._running:
                 logging.info("APRS-IS: reconnecting in 10s")
@@ -169,7 +177,7 @@ class APRSISListener:
         lat = packet.get("latitude")
         lon = packet.get("longitude")
 
-        logging.info(
+        logging.debug(
             "APRS-IS packet: from=%s | balloon_cs=%s active_car=%s",
             from_,
             self.balloon_callsigns,
@@ -183,8 +191,9 @@ class APRSISListener:
 
         if from_ in self.balloon_callsigns:
             try:
-                speed_mph = packet.get("speed")
-                speed_ms = round(speed_mph * 0.44704) if speed_mph is not None else -1
+                # aprslib normalises speed to km/h (knots * 1.852).
+                speed_kph = packet.get("speed")
+                speed_ms = round(speed_kph / 3.6) if speed_kph is not None else -1
 
                 heading = packet.get("course")
                 if heading is None:

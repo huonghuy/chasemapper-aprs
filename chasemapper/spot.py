@@ -32,8 +32,9 @@ SPOT_FEED_URL = (
     "{feed_id}/message.xml"
 )
 
-# SPOT's public API rate-limits at roughly 1 request / 2.5 minutes per feed.
-# 300s (5 min) is the recommended floor for basic tracking.
+# SPOT's public API rate-limits at roughly 1 request / 2.5 minutes (150 s)
+# per feed, so clamp the poll interval to that. The recommended default is
+# 300 s (5 min) — see spot_poll_interval in horusmapper.cfg.example.
 MIN_POLL_INTERVAL = 150
 
 

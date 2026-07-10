@@ -47,9 +47,10 @@ def read_last_balloon_telemetry():
                 log = read_file("./log_files/" + file)
             except Exception as e:
                 logging.debug("Error reading file - maybe in use: %s" % str(e))
+                continue
 
             for _entry in log:
-                if _entry["log_type"] == "BALLOON TELEMETRY":
+                if _entry.get("log_type") == "BALLOON TELEMETRY":
                     telemetry_found = True
                     _last_telemetry = _entry
 
