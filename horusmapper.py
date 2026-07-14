@@ -119,6 +119,11 @@ online_uploader = None
 # APRS-IS listener instance (set when car_source_type = aprsis)
 aprsis_listener = None
 
+# Runtime-only launch preview state. A profile is locked after its first real
+# balloon prediction so the car-origin preview cannot replace live tracking.
+launch_preview_active_profile = None
+launch_preview_locked_profiles = set()
+
 # Copy out any extra fields from incoming telemetry that we want to pass on to the GUI.
 # At the moment we're really only using the burst timer field.
 EXTRA_FIELDS = ["bt", "temp", "humidity", "sats", "snr"]
@@ -800,6 +805,196 @@ predictor_thread_running = True
 predictor_thread = None
 
 
+def _clear_launch_preview(profile_name, reason):
+    """Clear the temporary launch preview on every connected map."""
+    global launch_preview_active_profile
+
+    if launch_preview_active_profile == profile_name:
+        launch_preview_active_profile = None
+    flask_emit_event(
+        "launch_preview_clear",
+        {"profile": profile_name, "reason": reason},
+    )
+
+
+def _lock_launch_preview_for_live_prediction(callsign):
+    """Hand a profile from its temporary preview to real balloon tracking."""
+    profile_name = chasemapper_config.get("selected_profile", "")
+    profile = chasemapper_config.get("profiles", {}).get(profile_name, {})
+    balloon_callsigns = {
+        cs.upper() for cs in profile.get("aprsis_balloon_callsigns", [])
+    }
+    if callsign.upper() not in balloon_callsigns:
+        return
+    if profile_name in launch_preview_locked_profiles:
+        return
+
+    launch_preview_locked_profiles.add(profile_name)
+    _clear_launch_preview(profile_name, "live_prediction")
+    flask_emit_event("aprsis_state", _aprsis_state())
+
+
+def _calculate_launch_preview(car_state, ascent_rate):
+    """Run one prediction without adding a synthetic payload track."""
+    launch_time = datetime.now(UTC)
+    launch_altitude = float(car_state["alt"])
+    burst_altitude = max(
+        float(chasemapper_config["pred_burst"]), launch_altitude + 100.0
+    )
+    descent_rate = float(chasemapper_config["pred_desc_rate"])
+    float_enabled = bool(chasemapper_config.get("float_enabled", False))
+    float_altitude = float(chasemapper_config.get("float_altitude", 25000.0))
+    float_duration = float(chasemapper_config.get("float_duration_hours", 24.0))
+
+    if predictor == "Tawhiri":
+        if float_enabled:
+            effective_float_altitude = max(float_altitude, launch_altitude + 1.0)
+            prediction = get_tawhiri_prediction(
+                launch_datetime=launch_time,
+                launch_latitude=car_state["lat"],
+                launch_longitude=car_state["lon"],
+                launch_altitude=launch_altitude,
+                ascent_rate=ascent_rate,
+                profile="float_profile",
+                float_altitude=effective_float_altitude,
+                stop_datetime=launch_time + timedelta(hours=float_duration),
+            )
+        else:
+            prediction = get_tawhiri_prediction(
+                launch_datetime=launch_time,
+                launch_latitude=car_state["lat"],
+                launch_longitude=car_state["lon"],
+                launch_altitude=launch_altitude,
+                burst_altitude=burst_altitude,
+                ascent_rate=ascent_rate,
+                descent_rate=descent_rate,
+            )
+        prediction_path = prediction["path"] if prediction else []
+    else:
+        offline_burst = (
+            max(float_altitude, launch_altitude + 100.0)
+            if float_enabled
+            else burst_altitude
+        )
+        prediction_path = predictor.predict(
+            launch_lat=car_state["lat"],
+            launch_lon=car_state["lon"],
+            launch_alt=launch_altitude,
+            ascent_rate=ascent_rate,
+            descent_rate=descent_rate,
+            burst_alt=offline_burst,
+            launch_time=launch_time,
+            descent_mode=False,
+        )
+
+    if len(prediction_path) <= 1:
+        return None
+
+    prediction_path.insert(
+        0,
+        [0, car_state["lat"], car_state["lon"], launch_altitude],
+    )
+    output_path = [
+        [point[1], point[2], point[3]] for point in prediction_path
+    ]
+    burst = max(output_path, key=lambda point: point[2])
+    return {
+        "pred_path": output_path,
+        "pred_landing": output_path[-1],
+        "burst": burst,
+    }
+
+
+@socketio.on("launch_preview_request", namespace="/chasemapper")
+def launch_preview_request(data):
+    """Run a one-shot launch prediction from the active APRS car fix."""
+    global predictor_semaphore, launch_preview_active_profile
+    from flask_socketio import emit
+
+    profile_name = str(data.get("profile", "")).strip()
+    active_profile_name = chasemapper_config.get("selected_profile", "")
+    profile = _active_profile()
+
+    try:
+        ascent_rate = float(data.get("ascent_rate"))
+    except (TypeError, ValueError):
+        ascent_rate = 0.0
+
+    def status(state, message):
+        emit("launch_preview_status", {"state": state, "message": message})
+
+    if profile_name != active_profile_name or profile is None:
+        status("error", "The active telemetry profile changed; try again.")
+        return
+    if profile.get("car_source_type") != "aprsis":
+        status("error", "Launch preview requires APRS-IS as the car source.")
+        return
+    if not profile.get("aprsis_active_car_callsign"):
+        status("error", "No active APRS car callsign is configured.")
+        return
+    source_callsign = profile["aprsis_active_car_callsign"]
+    if profile_name in launch_preview_locked_profiles:
+        status("locked", "A live balloon prediction is active for this profile.")
+        return
+    if ascent_rate <= 0.0 or not math.isfinite(ascent_rate):
+        status("error", "Ascent rate must be a positive number.")
+        return
+    car_state = (
+        aprsis_listener.latest_car_position
+        if aprsis_listener is not None
+        else None
+    )
+    if car_state is None:
+        status("error", "No APRS car position has been received yet.")
+        return
+    if not chasemapper_config.get("pred_enabled") or predictor is None:
+        status("error", "The predictor is not ready or is disabled.")
+        return
+    if predictor_semaphore:
+        status("error", "The predictor is busy; try again in a moment.")
+        return
+
+    predictor_semaphore = True
+    status("running", "Running launch preview…")
+    try:
+        result = _calculate_launch_preview(car_state, ascent_rate)
+        if result is None:
+            status("error", "Launch preview failed; check the predictor model.")
+            return
+        if chasemapper_config.get("selected_profile", "") != profile_name:
+            status("error", "The active telemetry profile changed; preview discarded.")
+            return
+        if profile_name in launch_preview_locked_profiles:
+            status("locked", "A live balloon prediction is active for this profile.")
+            return
+
+        source_time = car_state["time"]
+        if hasattr(source_time, "isoformat"):
+            source_time = source_time.isoformat()
+        result.update(
+            {
+                "profile": profile_name,
+                "source_callsign": source_callsign,
+                "source_time": str(source_time),
+                "ascent_rate": ascent_rate,
+            }
+        )
+        launch_preview_active_profile = profile_name
+        flask_emit_event("launch_preview_update", result)
+        status("ready", "Launch preview updated from the latest APRS car fix.")
+        logging.info(
+            "Launch preview updated for profile %s from %s at %.2f m/s.",
+            profile_name,
+            source_callsign,
+            ascent_rate,
+        )
+    except Exception as error:
+        logging.exception("Launch preview failed: %s", error)
+        status("error", "Launch preview failed; check the server log.")
+    finally:
+        predictor_semaphore = False
+
+
 def predictorThread():
     """ Run the predictor on a regular interval """
     global predictor_thread_running, chasemapper_config
@@ -853,6 +1048,10 @@ def run_prediction():
     ):
         if (datetime.now(UTC) + timedelta(hours=4)) > predictor_model_end:
             fallback_to_tawhiri("GFS data expired")
+
+    if predictor_semaphore:
+        logging.debug("Skipping scheduled prediction because the predictor is busy.")
+        return
 
     # Set the semaphore so we don't accidentally kill the predictor object while it's running.
     predictor_semaphore = True
@@ -1109,6 +1308,7 @@ def run_prediction():
                 "abort_landing": current_payloads[_payload]["abort_landing"],
             }
             flask_emit_event("predictor_update", _client_data)
+            _lock_launch_preview_for_live_prediction(_payload)
 
             # Add the prediction run to the logger.
             if chase_logger:
@@ -1237,6 +1437,7 @@ def download_new_model_2():
 def clear_payload_data(data):
     """ Clear the payload data store """
     global predictor_semaphore, current_payloads, current_payload_tracks
+    global launch_preview_locked_profiles
     logging.warning("Client requested all payload data be cleared.")
     # Wait until any current predictions have finished running.
     while predictor_semaphore:
@@ -1244,6 +1445,9 @@ def clear_payload_data(data):
 
     current_payloads = {}
     current_payload_tracks = {}
+    launch_preview_locked_profiles.clear()
+    _clear_launch_preview(chasemapper_config.get("selected_profile", ""), "payload_clear")
+    flask_emit_event("aprsis_state", _aprsis_state())
 
 
 @socketio.on("car_data_clear", namespace="/chasemapper")
@@ -1703,6 +1907,9 @@ def profile_change(data):
     global chasemapper_config
     logging.info("Client requested change to profile: %s" % data)
 
+    previous_profile = chasemapper_config.get("selected_profile", "")
+    _clear_launch_preview(previous_profile, "profile_change")
+
     # Change the profile, and restart the listeners.
     chasemapper_config["selected_profile"] = data
     start_listeners(
@@ -1728,6 +1935,10 @@ def _aprsis_state():
         "car_callsigns": p.get("aprsis_car_callsigns", []),
         "balloon_callsigns": p.get("aprsis_balloon_callsigns", []),
         "connected": (aprsis_listener is not None) and aprsis_listener.connected,
+        "launch_preview_locked": (
+            chasemapper_config.get("selected_profile", "")
+            in launch_preview_locked_profiles
+        ),
     }
 
 

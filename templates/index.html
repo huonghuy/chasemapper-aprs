@@ -256,6 +256,7 @@
             // need to do a fair bit of work on the server when these occur. These have a dedicated
             // socketio message.
             $("#profileSelect").change(function(){
+                clearLaunchPreview({reason: "profile_change"});
                 // On a profile selection change, emit a message to the client.
                 socket.emit('profile_change', this.value);
 
@@ -655,6 +656,18 @@
                 handlePrediction(data);
             });
 
+            socket.on('launch_preview_update', function(data){
+                handleLaunchPreview(data);
+            });
+
+            socket.on('launch_preview_clear', function(data){
+                clearLaunchPreview(data);
+            });
+
+            socket.on('launch_preview_status', function(data){
+                handleLaunchPreviewStatus(data);
+            });
+
             socket.on('bearing_change', function(data){
                 bearingUpdate(data);
             });
@@ -670,6 +683,23 @@
 
             $("#downloadModel").click(function(){
                 socket.emit('download_model', {data: 'plzkthx'});
+            });
+
+            $("#runLaunchPreview").click(function(){
+                var enteredRate = window.prompt(
+                    "Balloon ascent rate in metres per second:",
+                    "5.5"
+                );
+                if (enteredRate === null) return;
+                var ascentRate = Number(enteredRate);
+                if (!Number.isFinite(ascentRate) || ascentRate <= 0) {
+                    setLaunchPreviewStatus("Ascent rate must be a positive number.", true);
+                    return;
+                }
+                socket.emit("launch_preview_request", {
+                    profile: chase_config.selected_profile,
+                    ascent_rate: ascentRate
+                });
             });
 
             $("#clearPayloadData").click(function(){
@@ -893,6 +923,7 @@
             renderCallsignList("#aprsisBalloonList", state.balloon_callsigns || [], "balloon");
 
             $("#aprsisStatus").text(state.connected ? "Connected" : "Not active");
+            setLaunchPreviewLocked(!!state.launch_preview_locked);
         }
 
         function renderCallsignList(selector, callsigns, kind) {
@@ -1071,6 +1102,10 @@
                 <div class="paramRow">
                     <b>Download Model </b> <button type="button" class="paramSelector" id="downloadModel">Download</button>
                 </div>
+                <div class="paramRow">
+                    <b>Launch Preview </b><button type="button" class="paramSelector" id="runLaunchPreview">Run Launch Preview</button>
+                </div>
+                <div id="launchPreviewStatus" style="font-size:12px; margin:2px 0 8px; color:#6b7280;"></div>
                 <div class="form-switch form-check-reverse">
                     <input class="form-check-input" type="checkbox" role="switch" value="" id="predictorEnabled" onclick='clientSettingsUpdate();'>
                     <label class="form-check-label" for="predictorEnabled">

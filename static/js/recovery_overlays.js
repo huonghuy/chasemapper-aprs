@@ -363,10 +363,10 @@
         }
     }
 
-    function attachLandingPopup(marker, lat, lon) {
+    function attachLandingPopup(marker, lat, lon, title) {
         // Augment existing prediction marker popup with Maps links.
         var html =
-            "<b>Predicted Landing</b><br>" +
+            "<b>" + (title || "Predicted Landing") + "</b><br>" +
             lat.toFixed(5) + ", " + lon.toFixed(5) + "<br>" +
             mapsLinksHtml(lat, lon);
         marker.bindPopup(html);
@@ -401,6 +401,11 @@
             if ($("toggle-parcels") && $("toggle-parcels").checked) {
                 debounceParcelFetch();
             }
+        },
+
+        attachLandingPopup: function (marker, lat, lon, title) {
+            if (!marker || typeof lat !== "number" || typeof lon !== "number") return;
+            attachLandingPopup(marker, lat, lon, title);
         },
 
         _state: function () { return state; }

@@ -35,6 +35,7 @@ class APRSISListener:
         self.active_car_callsign = active_car_callsign.upper() if active_car_callsign else ""
         self.summary_callback = summary_callback
         self.car_callback = car_callback
+        self.latest_car_position = None
 
         self._sock = None
         self._lock = threading.Lock()
@@ -62,6 +63,7 @@ class APRSISListener:
 
     def set_active_car_callsign(self, callsign):
         self.active_car_callsign = callsign.upper()
+        self.latest_car_position = None
         with self._lock:
             self._send_filter()
 
@@ -223,12 +225,17 @@ class APRSISListener:
 
         if from_ == self.active_car_callsign.upper():
             try:
-                self.car_callback(
-                    {
-                        "latitude": lat,
-                        "longitude": lon,
-                        "altitude": alt_m,
-                    }
-                )
+                now = datetime.datetime.now(datetime.timezone.utc)
+                self.latest_car_position = {
+                    "time": now,
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "alt": alt_m,
+                }
+                self.car_callback({
+                    "latitude": lat,
+                    "longitude": lon,
+                    "altitude": alt_m,
+                })
             except Exception as e:
                 logging.error("APRS-IS: car_callback error: %s" % e)
