@@ -17,6 +17,9 @@ import logging
 import math
 
 import requests
+from shapely.geometry import Point, Polygon
+
+from .md_boundary import MD_BOUNDARY_COORDINATES
 
 
 PARCEL_URL = (
@@ -29,14 +32,17 @@ RADIUS_MAX_MI = 1.0
 RADIUS_MIN_MI = 0.05
 
 MD_BBOX = {"lat_min": 37.88, "lat_max": 39.73, "lon_min": -79.49, "lon_max": -75.05}
+MD_BOUNDARY = Polygon(MD_BOUNDARY_COORDINATES)
 
 _METERS_PER_MILE = 1609.344
 
 
-def _empty_fc(error=None):
+def _empty_fc(error=None, error_code=None):
     fc = {"type": "FeatureCollection", "features": []}
     if error:
         fc["error"] = error
+    if error_code:
+        fc["error_code"] = error_code
     return fc
 
 
@@ -76,8 +82,11 @@ def get_parcels_near(lat, lon, radius_miles, max_pages=5):
     if not (
         MD_BBOX["lat_min"] <= lat <= MD_BBOX["lat_max"]
         and MD_BBOX["lon_min"] <= lon <= MD_BBOX["lon_max"]
-    ):
-        return _empty_fc("Landing point is outside MD coverage.")
+    ) or not MD_BOUNDARY.covers(Point(lon, lat)):
+        return _empty_fc(
+            "Land owner information is not available for this area.",
+            "outside_md",
+        )
 
     radius_meters = radius_miles * _METERS_PER_MILE
     bbox = _bbox_meters(lat, lon, radius_meters)
@@ -107,7 +116,10 @@ def get_parcels_near(lat, lon, radius_miles, max_pages=5):
             data = r.json()
         except Exception as e:
             logging.warning("Parcel proxy: fetch failed (page %d): %s", page, e)
-            return _empty_fc("upstream parcel API error")
+            return _empty_fc(
+                "Maryland parcel information is temporarily unavailable.",
+                "upstream_unavailable",
+            )
 
         page_feats = data.get("features", []) or []
         features.extend(page_feats)

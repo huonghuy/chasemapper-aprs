@@ -296,7 +296,11 @@
                         state.map.removeLayer(state.parcelLayer);
                         state.parcelLayer = null;
                     }
-                    setStatus("parcel-status", data.error, true);
+                    setStatus(
+                        "parcel-status",
+                        data.error,
+                        data.error_code !== "outside_md"
+                    );
                     return;
                 }
                 if (state.parcelLayer) {
