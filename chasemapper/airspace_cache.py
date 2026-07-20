@@ -47,15 +47,18 @@ _SUA_URL = (
     "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/"
     "Special_Use_Airspace/FeatureServer/0/query"
 )
-_TFR_URL = "https://tfr.faa.gov/tfrapi/exportTfrList"
+_TFR_WFS_URL = "https://tfr.faa.gov/geoserver/TFR/ows"
 
 LAYERS = ("class_b", "class_c", "class_d", "class_e", "sua", "tfr")
 
-_CLASS_LOCAL_TYPE = {
-    "class_b": "CLASS_B",
-    "class_c": "CLASS_C",
-    "class_d": "CLASS_D",
-    "class_e": "CLASS_E",
+_CLASS_WHERE = {
+    "class_b": "LOCAL_TYPE='CLASS_B'",
+    "class_c": "LOCAL_TYPE='CLASS_C'",
+    "class_d": "LOCAL_TYPE='CLASS_D'",
+    # Class E is split across CLASS_E and CLASS_E2 through CLASS_E6 in the
+    # FAA layer. Filtering on LOCAL_TYPE='CLASS_E' returns only the broad
+    # en-route area and omits the useful surface/transition airspace.
+    "class_e": "CLASS='E'",
 }
 
 _started = False
@@ -128,9 +131,8 @@ def _bbox_geometry_param():
 
 
 def _fetch_class_airspace(layer):
-    local_type = _CLASS_LOCAL_TYPE[layer]
     params = {
-        "where": "LOCAL_TYPE='{}'".format(local_type),
+        "where": _CLASS_WHERE[layer],
         "geometry": _bbox_geometry_param(),
         "geometryType": "esriGeometryEnvelope",
         "spatialRel": "esriSpatialRelIntersects",
@@ -164,55 +166,77 @@ def _fetch_sua():
     return r.json()
 
 
-def _bbox_contains(lat, lon):
-    b = REGION_BBOX
-    return b["lat_min"] <= lat <= b["lat_max"] and b["lon_min"] <= lon <= b["lon_max"]
-
-
-def _coords_in_region(geom):
-    """Walk a GeoJSON geometry and return True if any coord lands in the bbox."""
+def _geometry_intersects_region(geom):
+    """Return True when a GeoJSON geometry's bounds overlap the region."""
     if not geom:
         return False
     coords = geom.get("coordinates")
     if coords is None:
         return False
 
+    points = []
+
     def walk(c):
         if isinstance(c, (list, tuple)) and c and isinstance(c[0], (int, float)):
-            lon, lat = c[0], c[1]
-            return _bbox_contains(lat, lon)
+            if len(c) >= 2:
+                points.append((c[0], c[1]))
+            return
         if isinstance(c, (list, tuple)):
-            return any(walk(x) for x in c)
+            for child in c:
+                walk(child)
+
+    walk(coords)
+    if not points:
         return False
 
-    return walk(coords)
+    lon_min = min(point[0] for point in points)
+    lon_max = max(point[0] for point in points)
+    lat_min = min(point[1] for point in points)
+    lat_max = max(point[1] for point in points)
+    b = REGION_BBOX
+    return not (
+        lon_max < b["lon_min"]
+        or lon_min > b["lon_max"]
+        or lat_max < b["lat_min"]
+        or lat_min > b["lat_max"]
+    )
 
 
 def _fetch_tfrs():
-    """TFR endpoint schema is loose. Be defensive: log and return empty FC on issues."""
-    try:
-        r = requests.get(_TFR_URL, timeout=REQUEST_TIMEOUT)
-        r.raise_for_status()
-        raw = r.json()
-    except Exception as e:
-        logging.warning("Airspace cache: TFR fetch/parse failed: %s", e)
-        return {"type": "FeatureCollection", "features": []}
+    """Fetch active TFR polygons from the WFS feed used by the FAA map."""
+    params = {
+        "service": "WFS",
+        "version": "1.1.0",
+        "request": "GetFeature",
+        "typeName": "TFR:V_TFR_LOC",
+        "maxFeatures": 1000,
+        "outputFormat": "application/json",
+        "srsname": "EPSG:4326",
+    }
+    r = requests.get(_TFR_WFS_URL, params=params, timeout=REQUEST_TIMEOUT)
+    r.raise_for_status()
+    raw = r.json()
+    if not isinstance(raw, dict) or raw.get("type") != "FeatureCollection":
+        raise ValueError("unexpected TFR WFS response shape")
 
-    items = raw if isinstance(raw, list) else raw.get("tfrList") or raw.get("data") or []
     features = []
-    for item in items:
+    for item in raw.get("features", []):
         try:
-            geom = item.get("shape") or item.get("geometry") or item.get("geom")
-            if isinstance(geom, str):
-                try:
-                    geom = json.loads(geom)
-                except Exception:
-                    geom = None
+            geom = item.get("geometry")
             if not geom:
                 continue
-            if not _coords_in_region(geom):
+            if not _geometry_intersects_region(geom):
                 continue
-            props = {k: v for k, v in item.items() if k not in ("shape", "geometry", "geom")}
+
+            props = dict(item.get("properties") or {})
+            notam_key = props.get("NOTAM_KEY") or ""
+            if notam_key:
+                props.setdefault("notam_id", notam_key.split("-", 1)[0])
+            props.setdefault("type", props.get("LEGAL"))
+            props.setdefault("description", props.get("TITLE"))
+            props.setdefault(
+                "last_modified", props.get("LAST_MODIFICATION_DATETIME")
+            )
             features.append({"type": "Feature", "geometry": geom, "properties": props})
         except Exception as e:
             logging.debug("Airspace cache: skipping malformed TFR item: %s", e)
@@ -223,7 +247,7 @@ def _fetch_tfrs():
 
 def _refresh_layer(layer):
     fetched_at = time.time()
-    if layer in _CLASS_LOCAL_TYPE:
+    if layer in _CLASS_WHERE:
         geo = _fetch_class_airspace(layer)
     elif layer == "sua":
         geo = _fetch_sua()
@@ -339,7 +363,7 @@ def start_background_refresh():
         else:
             logging.info("Airspace cache: loading %s from cache", layer)
 
-    for layer in _CLASS_LOCAL_TYPE:
+    for layer in _CLASS_WHERE:
         threading.Thread(
             target=_refresh_loop, args=(layer, AIRSPACE_REFRESH_SEC), daemon=True
         ).start()

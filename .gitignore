@@ -32,4 +32,6 @@ wheels/
 *.md
 .rtk/
 .codegraph/
+.codex/
+.agents/
 CLAUDE.md

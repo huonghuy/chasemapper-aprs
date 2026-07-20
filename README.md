@@ -40,29 +40,34 @@ Everything else (APRS-IS, SPOT, predictions, maps) is location-agnostic.
 ## Quickstart (Docker)
 
 The fastest path from zero to a running map.
-
+```bash
     git clone https://github.com/huonghuy/chasemapper-aprs.git
     cd chasemapper-aprs
-
-    # 1. Create your config
+```
+  1. Create your config
+```bash
     cp horusmapper.cfg.example horusmapper.cfg
     # Edit horusmapper.cfg — set at least:
     #   - default_lat / default_lon (map center)
     #   - your APRS-IS profile (callsigns for cars + balloons)
-
-    # 2. Create your .env (see "Environment Variables" section below)
+```
+  2. Create your .env (see "Environment Variables" section below)
+```bash
     touch .env
+```  
     # If you're not exposing this publicly, you can leave .env empty —
     # the SPOT + RECOVERY_API_KEY features just stay disabled.
 
     # 3. Create a docker-compose.yml from the example
+```bash    
     cp docker-compose.yml.example docker-compose.yml
     # Edit if you want to build locally instead of pulling the image,
     # or to add an offline map tile mount.
-
+```
     # 4. Start it
+```bash    
     docker compose up -d
-
+```
     # 5. Open the UI
     # http://<host-ip>:5001/
 
@@ -99,20 +104,20 @@ If you are using Docker, you can skip this section.
 **Note: ChaseMapper requires Python 3.6 or newer.**
 
 On a Raspbian/Ubuntu/Debian system, install the system-level build deps:
-```
+```bash
 $ sudo apt-get install git python3-pip libatlas3-base libgfortran5 libopenblas-dev libgeos-dev
 ```
 On other OSes the required packages should be named something similar.
 
 Clone the repo:
-```
+```bash
 $ git clone https://github.com/huonghuy/chasemapper-aprs.git
 $ cd chasemapper-aprs
 ```
 
 Install the Python dependencies from `requirements.txt` (covers
 flask, flask-socketio, aprslib, pytz, requests, numpy, etc.):
-```
+```bash
 $ pip3 install -r requirements.txt
 ```
 A virtualenv is recommended if you don't want to install into the
@@ -130,9 +135,9 @@ To use the map, you need some kind of data to plot on it! The mapping backend ac
 Chasemapper reads secrets from environment variables to keep them out of
 the committed config. Create a `.env` file in the repo root (already
 gitignored):
-
+```bash
     touch .env
-
+```
 ### Variables
 
 | Variable             | Required?  | Purpose                                       |
@@ -153,25 +158,25 @@ warning and continues.
 2. Open your device → **Share** → create or open a **Shared Page**
 3. The Feed ID is the long alphanumeric token in the page URL
 4. Paste each into `.env`:
-
+```bash
        RECOVERY_API_KEY=...
        SPOT_FEED_COMMAND=XXXXXXXXXXXXXXXXXXXX
        SPOT_FEED_HAPL=YYYYYYYYYYYYYYYYYYYY
-
+```
 ### Wiring it into docker-compose
 
 Add `env_file:` to the chasemapper service in your `docker-compose.yml`:
-
+```yml
     services:
       chasemapper:
         # ... your existing config ...
         env_file:
           - .env
-
+```
 Then start as usual:
-
+```bash
     docker compose up -d
-
+```
 ### Verify
 
     docker compose logs chasemapper | grep SPOT
@@ -188,7 +193,7 @@ right service and the `.env` file is in the directory you run
 ## Configuration & Startup
 Many settings are defined in the [horusmapper.cfg](./horusmapper.cfg.example) configuration file.
 Create a copy of the example config file using
-```
+```bash
 $ cp horusmapper.cfg.example horusmapper.cfg
 ```
 Edit this file with your preferred text editor. The configuration file is fairly descriptive - you will need to set:
@@ -202,7 +207,7 @@ You need to create a .env file if routing this through some back end. This will 
 - SPOT Trace Key!
 
 Once configured, you can start-up the horusmapper server with:
-```
+```bash
 $ python3 horusmapper.py
 ```
 
@@ -241,7 +246,7 @@ Note that if you want to use these offline maps within a Docker container, you w
 [MapTilesDownloader](https://github.com/ke5gdb/MapTilesDownloader) can be setup on your RPi, allowing access via a web browser to select tile regions. KE5GDB's fork (linked above) has docker images available for easy setup.
 
 To do a once-off startup of MapTilesDownloader and grab some tiles, run:
-```
+```bash
 docker run \
   -t \
   --name maptilesdownloader \
@@ -252,7 +257,7 @@ docker run \
 .. then navigate to port 5002 on on your RPi's IP address to see the web interface.
 
 To make it run on every boot, run:
-```
+```bash
 docker run \
   -d \
   -t \
@@ -282,15 +287,15 @@ If you're using docker, this is already sorted out for you, and the docker conta
 
 To set this up, the chasemapper.service file  must be edited to include your username, and the path to this directory.
 
-```
-$ sudo cp chasemapper.service /etc/systemd/system/
-$ sudo nano /etc/systemd/system/chasemapper.service
+```bash
+sudo cp chasemapper.service /etc/systemd/system/
+sudo nano /etc/systemd/system/chasemapper.service
 ```
 
 If you are not running chasemapper on a Raspberry Pi as the 'pi' user, you will need to edit the chasemapper.service file and modify
 the `ExecStart`, `WorkingDirectory` and `User` fields. Otherwise, leave all settings at their defaults:
 
-```
+```bash
 [Unit]
 Description=chasemapper
 After=syslog.target
@@ -308,18 +313,18 @@ WantedBy=multi-user.target
 ```
 
 Once/if edited, install and start the service using:
-```
+```bash
 $ sudo systemctl enable chasemapper.service
 $ sudo systemctl start chasemapper.service
 ```
 
 The debug log output can be viewed buy running:
-```
+```bash
 $ sudo journalctl -u chasemapper.service -f -n
 ```
 
 To stop the service, simply run:
-```
+```bash
 $ sudo systemctl stop chasemapper.service
 ```
 

@@ -22,6 +22,18 @@
         tfr:     { color: "#f97316", weight: 2, fillOpacity: 0.15 }
     };
 
+    // Separate SVG panes keep transparent polygons clickable without a
+    // full-map Canvas renderer swallowing clicks intended for lower layers.
+    // Broad Class E areas sit below terminal airspace, SUA, and TFRs.
+    var AIRSPACE_PANES = {
+        class_e: { name: "airspace-class-e", zIndex: 410 },
+        class_b: { name: "airspace-class-b", zIndex: 420 },
+        class_c: { name: "airspace-class-c", zIndex: 430 },
+        class_d: { name: "airspace-class-d", zIndex: 440 },
+        sua:     { name: "airspace-sua", zIndex: 450 },
+        tfr:     { name: "airspace-tfr", zIndex: 460 }
+    };
+
     var PARCEL_STYLE = { color: "#ea580c", weight: 1, fillOpacity: 0.08 };
     var SEARCH_CIRCLE_STYLE = { color: "#dc2626", weight: 2, dashArray: "6,6", fill: false };
 
@@ -100,15 +112,45 @@
         return "";
     }
 
+    function escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
     function formatAlt(value, unit, codeword) {
         if (value === "" || value === undefined || value === null) return "";
         var v = String(value).trim();
+        var code = codeword ? String(codeword).trim().toUpperCase() : "";
+        if (code === "SFC" || code === "UNLTD") return code;
+        if (parseFloat(v) <= -9998 && code) return code;
         // Don't double-suffix if value already looks like "12000 FT" or "SFC".
         if (/[A-Za-z]/.test(v)) return v;
         var parts = [v];
         if (unit) parts.push(String(unit));
         if (codeword) parts.push(String(codeword));  // e.g. MSL, AGL
         return parts.join(" ");
+    }
+
+    function formatSchedule(props) {
+        var explicit = pickFirst(props, ["TIMESOFUSE", "timesOfUse"]);
+        if (explicit) return String(explicit);
+
+        var code = String(pickFirst(props, ["WKHR_CODE", "wkhrCode"]) || "")
+            .trim().toUpperCase();
+        var remark = String(pickFirst(props, ["WKHR_RMK", "wkhrRemark"]) || "").trim();
+
+        if (code === "H24") return "Continuous (H24)";
+        if (code === "NOTAM") return "See NOTAM";
+
+        // This FAA boilerplate describes where the legal schedule is defined;
+        // it is not itself an operating-hours value.
+        if (/legal description references notam/i.test(remark)) remark = "";
+        if (code && remark) return code + " — " + remark;
+        return remark || code;
     }
 
     function buildAirspacePopup(layer, props) {
@@ -138,31 +180,55 @@
         var ceil = formatAlt(ceilVal, ceilUnit, ceilCode);
         var floor = formatAlt(floorVal, floorUnit, floorCode);
 
-        var html = "<b>" + name + "</b>";
+        var html = "<b>" + escapeHtml(name) + "</b>";
         if (floor || ceil) {
-            html += "<br>" + (floor || "SFC") + " &mdash; " + (ceil || "?");
+            html += "<br>" + escapeHtml(floor || "SFC") + " &mdash; " + escapeHtml(ceil || "?");
+        }
+
+        var airspaceClass = pickFirst(p, ["CLASS", "LOCAL_TYPE", "TYPE_CODE"]);
+        var sector = pickFirst(p, ["SECTOR", "sector"]);
+        var schedule = formatSchedule(p);
+        var agency = pickFirst(p, ["CONT_AGENT", "COMM_NAME"]);
+        if (airspaceClass) html += "<br><small><b>Class/type:</b> " + escapeHtml(airspaceClass) + "</small>";
+        if (sector) html += "<br><small><b>Sector:</b> " + escapeHtml(sector) + "</small>";
+        if (schedule) html += "<br><small><b>Schedule:</b> " + escapeHtml(schedule) + "</small>";
+        if (agency) html += "<br><small><b>Controlling agency:</b> " + escapeHtml(agency) + "</small>";
+
+        if (layer === "tfr") {
+            var stateName = pickFirst(p, ["STATE", "state"]);
+            if (stateName) html += "<br><small><b>State:</b> " + escapeHtml(stateName) + "</small>";
         }
 
         // TFR-specific extras: NOTAM number, type, description, expiration.
         var notam = pickFirst(p, [
             "notam_id", "NOTAM_ID", "notamId",
             "notam_number", "NOTAM_NUMBER", "notamNumber",
-            "NOTAM", "notam"
+            "NOTAM", "notam", "NOTAM_KEY"
         ]);
-        if (notam) html += "<br><small><b>NOTAM:</b> " + notam + "</small>";
+        if (notam) html += "<br><small><b>NOTAM:</b> " + escapeHtml(notam) + "</small>";
 
-        var tfrType = pickFirst(p, ["type", "TYPE", "tfr_type"]);
-        if (tfrType) html += "<br><small>" + tfrType + "</small>";
-        var tfrDesc = pickFirst(p, ["description", "DESCRIPTION", "remarks"]);
+        var tfrType = pickFirst(p, ["type", "TYPE", "tfr_type", "LEGAL"]);
+        if (tfrType) html += "<br><small>" + escapeHtml(tfrType) + "</small>";
+        var tfrDesc = pickFirst(p, ["description", "DESCRIPTION", "remarks", "TITLE"]);
         if (tfrDesc) {
             var trimmed = String(tfrDesc);
             if (trimmed.length > 200) trimmed = trimmed.slice(0, 200) + "…";
-            html += "<br><small>" + trimmed + "</small>";
+            html += "<br><small>" + escapeHtml(trimmed) + "</small>";
         }
         var tfrExp = pickFirst(p, ["expires_dt", "EXPIRES", "expiration"]);
-        if (tfrExp) html += "<br><small>Expires: " + tfrExp + "</small>";
+        if (tfrExp) html += "<br><small>Expires: " + escapeHtml(tfrExp) + "</small>";
+        var tfrModified = pickFirst(p, ["last_modified", "LAST_MODIFICATION_DATETIME"]);
+        if (tfrModified) html += "<br><small>Last modified: " + escapeHtml(tfrModified) + "</small>";
 
         return html;
+    }
+
+    function ensureAirspacePanes() {
+        Object.keys(AIRSPACE_PANES).forEach(function (layer) {
+            var config = AIRSPACE_PANES[layer];
+            var pane = state.map.getPane(config.name) || state.map.createPane(config.name);
+            pane.style.zIndex = String(config.zIndex);
+        });
     }
 
     function showAirspaceLayer(layer) {
@@ -175,8 +241,9 @@
             if (!$("toggle-" + layer.replace("_", "-")).checked) return;
             if (!$("toggle-airspace").checked) return;
             var leafletLayer = L.geoJSON(data, {
-                renderer: L.canvas(),
+                pane: AIRSPACE_PANES[layer].name,
                 style: AIRSPACE_STYLE[layer],
+                interactive: true,
                 onEachFeature: function (feature, lyr) {
                     lyr.bindPopup(buildAirspacePopup(layer, feature.properties));
                 }
@@ -379,6 +446,7 @@
     var Api = {
         init: function (map) {
             state.map = map;
+            ensureAirspacePanes();
             // Defer wiring until DOM elements exist; index.html may load this script
             // before the sidebar HTML is parsed.
             if (document.readyState === "loading") {
