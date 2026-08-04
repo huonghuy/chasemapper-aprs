@@ -2,7 +2,7 @@
 // CHASE - Browser-Based Chase Mapper - Recovery Overlays
 //
 // Self-contained module exposing window.RecoveryOverlays.
-// Adds toggleable FAA airspace, TFR, and Maryland parcel overlays plus
+// Adds toggleable ENAIRE (Spanish) airspace and parcel overlays plus
 // platform-aware Maps links on the predicted landing marker.
 //
 //   Copyright (C) 2026 Huy Huong <huyhuong@umd.edu>
@@ -11,27 +11,32 @@
 (function () {
     "use strict";
 
-    var AIRSPACE_LAYERS = ["class_b", "class_c", "class_d", "class_e", "sua", "tfr"];
+    var AIRSPACE_LAYERS = ["ctr", "tma", "cta", "atz", "restricted", "military", "rmz_tmz"];
 
+    // Blues for controlled airspace, reds/oranges for hazard areas, green for
+    // the equipment-mandatory zones.
     var AIRSPACE_STYLE = {
-        class_b: { color: "#1f4ed8", weight: 2, fillOpacity: 0.05 },
-        class_c: { color: "#7c3aed", weight: 2, fillOpacity: 0.05 },
-        class_d: { color: "#0ea5e9", weight: 2, fillOpacity: 0.05 },
-        class_e: { color: "#64748b", weight: 1, fillOpacity: 0.03 },
-        sua:     { color: "#dc2626", weight: 2, fillOpacity: 0.08 },
-        tfr:     { color: "#f97316", weight: 2, fillOpacity: 0.15 }
+        ctr:        { color: "#1f4ed8", weight: 2, fillOpacity: 0.06 },
+        tma:        { color: "#7c3aed", weight: 2, fillOpacity: 0.04 },
+        cta:        { color: "#0ea5e9", weight: 1, fillOpacity: 0.03 },
+        atz:        { color: "#64748b", weight: 2, fillOpacity: 0.06 },
+        restricted: { color: "#dc2626", weight: 2, fillOpacity: 0.10 },
+        military:   { color: "#f97316", weight: 2, fillOpacity: 0.10 },
+        rmz_tmz:    { color: "#10b981", weight: 2, fillOpacity: 0.05 }
     };
 
     // Separate SVG panes keep transparent polygons clickable without a
     // full-map Canvas renderer swallowing clicks intended for lower layers.
-    // Broad Class E areas sit below terminal airspace, SUA, and TFRs.
+    // Broad en-route areas sit below terminal airspace, which sits below the
+    // hazard areas a balloon most needs to see.
     var AIRSPACE_PANES = {
-        class_e: { name: "airspace-class-e", zIndex: 410 },
-        class_b: { name: "airspace-class-b", zIndex: 420 },
-        class_c: { name: "airspace-class-c", zIndex: 430 },
-        class_d: { name: "airspace-class-d", zIndex: 440 },
-        sua:     { name: "airspace-sua", zIndex: 450 },
-        tfr:     { name: "airspace-tfr", zIndex: 460 }
+        cta:        { name: "airspace-cta", zIndex: 410 },
+        tma:        { name: "airspace-tma", zIndex: 420 },
+        ctr:        { name: "airspace-ctr", zIndex: 430 },
+        atz:        { name: "airspace-atz", zIndex: 440 },
+        rmz_tmz:    { name: "airspace-rmz-tmz", zIndex: 450 },
+        military:   { name: "airspace-military", zIndex: 460 },
+        restricted: { name: "airspace-restricted", zIndex: 470 }
     };
 
     var PARCEL_STYLE = { color: "#ea580c", weight: 1, fillOpacity: 0.08 };
@@ -102,16 +107,6 @@
             });
     }
 
-    // Field-name fallbacks vary across FAA endpoints (Class_Airspace,
-    // Special_Use_Airspace, TFR). Try common variants and stop at the first hit.
-    function pickFirst(obj, keys) {
-        for (var i = 0; i < keys.length; i++) {
-            var v = obj[keys[i]];
-            if (v !== undefined && v !== null && v !== "") return v;
-        }
-        return "";
-    }
-
     function escapeHtml(value) {
         return String(value)
             .replace(/&/g, "&amp;")
@@ -121,104 +116,46 @@
             .replace(/'/g, "&#039;");
     }
 
-    function formatAlt(value, unit, codeword) {
-        if (value === "" || value === undefined || value === null) return "";
-        var v = String(value).trim();
-        var code = codeword ? String(codeword).trim().toUpperCase() : "";
-        if (code === "SFC" || code === "UNLTD") return code;
-        if (parseFloat(v) <= -9998 && code) return code;
-        // Don't double-suffix if value already looks like "12000 FT" or "SFC".
-        if (/[A-Za-z]/.test(v)) return v;
-        var parts = [v];
-        if (unit) parts.push(String(unit));
-        if (codeword) parts.push(String(codeword));  // e.g. MSL, AGL
-        return parts.join(" ");
-    }
-
-    function formatSchedule(props) {
-        var explicit = pickFirst(props, ["TIMESOFUSE", "timesOfUse"]);
-        if (explicit) return String(explicit);
-
-        var code = String(pickFirst(props, ["WKHR_CODE", "wkhrCode"]) || "")
-            .trim().toUpperCase();
-        var remark = String(pickFirst(props, ["WKHR_RMK", "wkhrRemark"]) || "").trim();
-
-        if (code === "H24") return "Continuous (H24)";
-        if (code === "NOTAM") return "See NOTAM";
-
-        // This FAA boilerplate describes where the legal schedule is defined;
-        // it is not itself an operating-hours value.
-        if (/legal description references notam/i.test(remark)) remark = "";
-        if (code && remark) return code + " — " + remark;
-        return remark || code;
+    // Vertical limits are normalised server-side. ENAIRE's own display string
+    // ("SFC", "1000ft AGL", "FL145") is authoritative; the numeric feet are a
+    // fallback for the handful of records that have no display string.
+    function formatLimit(display, feet, datum, fallback) {
+        if (display) return display;
+        if (feet !== null && feet !== undefined) {
+            return Math.round(feet) + " ft" + (datum ? " " + datum : "");
+        }
+        return fallback;
     }
 
     function buildAirspacePopup(layer, props) {
         var p = props || {};
-        var name = pickFirst(p, [
-            "NAME", "name", "Name",
-            "LOCAL_TYPE", "TYPE_CODE",
-            "notam_id", "NOTAM_ID"
-        ]) || layer.toUpperCase();
+        var html = "<b>" + escapeHtml(p.name || layer.toUpperCase()) + "</b>";
 
-        var ceilVal = pickFirst(p, [
-            "UPPER_VAL", "upperVal", "UPPER_ALT", "UPPER_LIMIT",
-            "max_altitude", "maxAltitude", "MAX_ALT", "ceiling",
-            "UPPER_DESC"
-        ]);
-        var ceilUnit = pickFirst(p, ["UPPER_UOM", "upperUom"]);
-        var ceilCode = pickFirst(p, ["UPPER_CD", "UPPER_CODE", "UPPER_DESC_CODE"]);
+        var designator = [p.type_code, p.ident].filter(Boolean).join(" ");
+        if (designator) html += " <small>(" + escapeHtml(designator) + ")</small>";
 
-        var floorVal = pickFirst(p, [
-            "LOWER_VAL", "lowerVal", "LOWER_ALT", "LOWER_LIMIT",
-            "min_altitude", "minAltitude", "MIN_ALT", "floor",
-            "LOWER_DESC"
-        ]);
-        var floorUnit = pickFirst(p, ["LOWER_UOM", "lowerUom"]);
-        var floorCode = pickFirst(p, ["LOWER_CD", "LOWER_CODE", "LOWER_DESC_CODE"]);
+        html += "<br>" +
+            escapeHtml(formatLimit(p.lower, p.lower_ft, p.lower_datum, "SFC")) +
+            " &mdash; " +
+            escapeHtml(formatLimit(p.upper, p.upper_ft, p.upper_datum, "not specified"));
 
-        var ceil = formatAlt(ceilVal, ceilUnit, ceilCode);
-        var floor = formatAlt(floorVal, floorUnit, floorCode);
-
-        var html = "<b>" + escapeHtml(name) + "</b>";
-        if (floor || ceil) {
-            html += "<br>" + escapeHtml(floor || "SFC") + " &mdash; " + escapeHtml(ceil || "?");
+        if (p.airspace_class) {
+            html += "<br><small><b>Class:</b> " + escapeHtml(p.airspace_class) + "</small>";
         }
-
-        var airspaceClass = pickFirst(p, ["CLASS", "LOCAL_TYPE", "TYPE_CODE"]);
-        var sector = pickFirst(p, ["SECTOR", "sector"]);
-        var schedule = formatSchedule(p);
-        var agency = pickFirst(p, ["CONT_AGENT", "COMM_NAME"]);
-        if (airspaceClass) html += "<br><small><b>Class/type:</b> " + escapeHtml(airspaceClass) + "</small>";
-        if (sector) html += "<br><small><b>Sector:</b> " + escapeHtml(sector) + "</small>";
-        if (schedule) html += "<br><small><b>Schedule:</b> " + escapeHtml(schedule) + "</small>";
-        if (agency) html += "<br><small><b>Controlling agency:</b> " + escapeHtml(agency) + "</small>";
-
-        if (layer === "tfr") {
-            var stateName = pickFirst(p, ["STATE", "state"]);
-            if (stateName) html += "<br><small><b>State:</b> " + escapeHtml(stateName) + "</small>";
+        if (p.schedule) {
+            html += "<br><small><b>Active:</b> " + escapeHtml(p.schedule) + "</small>";
         }
-
-        // TFR-specific extras: NOTAM number, type, description, expiration.
-        var notam = pickFirst(p, [
-            "notam_id", "NOTAM_ID", "notamId",
-            "notam_number", "NOTAM_NUMBER", "notamNumber",
-            "NOTAM", "notam", "NOTAM_KEY"
-        ]);
-        if (notam) html += "<br><small><b>NOTAM:</b> " + escapeHtml(notam) + "</small>";
-
-        var tfrType = pickFirst(p, ["type", "TYPE", "tfr_type", "LEGAL"]);
-        if (tfrType) html += "<br><small>" + escapeHtml(tfrType) + "</small>";
-        var tfrDesc = pickFirst(p, ["description", "DESCRIPTION", "remarks", "TITLE"]);
-        if (tfrDesc) {
-            var trimmed = String(tfrDesc);
-            if (trimmed.length > 200) trimmed = trimmed.slice(0, 200) + "…";
-            html += "<br><small>" + escapeHtml(trimmed) + "</small>";
+        if (p.frequency) {
+            html += "<br><small><b>Frequency:</b> " + escapeHtml(p.frequency) + "</small>";
         }
-        var tfrExp = pickFirst(p, ["expires_dt", "EXPIRES", "expiration"]);
-        if (tfrExp) html += "<br><small>Expires: " + escapeHtml(tfrExp) + "</small>";
-        var tfrModified = pickFirst(p, ["last_modified", "LAST_MODIFICATION_DATETIME"]);
-        if (tfrModified) html += "<br><small>Last modified: " + escapeHtml(tfrModified) + "</small>";
+        if (p.zones && p.zones.length) {
+            html += "<br><small><b>Mandatory:</b> " + escapeHtml(p.zones.join(", ")) + "</small>";
+        }
+        if (p.remarks) {
+            var remarks = String(p.remarks);
+            if (remarks.length > 240) remarks = remarks.slice(0, 240) + "…";
+            html += "<br><small>" + escapeHtml(remarks) + "</small>";
+        }
 
         return html;
     }
@@ -238,7 +175,8 @@
         }
         fetchAirspace(layer).then(function (data) {
             if (!data) return;
-            if (!$("toggle-" + layer.replace("_", "-")).checked) return;
+            var sub = $("toggle-" + layer.replace(/_/g, "-"));
+            if (!sub || !sub.checked) return;
             if (!$("toggle-airspace").checked) return;
             var leafletLayer = L.geoJSON(data, {
                 pane: AIRSPACE_PANES[layer].name,
@@ -263,7 +201,7 @@
     function syncAirspace() {
         var masterOn = $("toggle-airspace").checked;
         AIRSPACE_LAYERS.forEach(function (layer) {
-            var subId = "toggle-" + layer.replace("_", "-");
+            var subId = "toggle-" + layer.replace(/_/g, "-");
             var sub = $(subId);
             if (masterOn && sub && sub.checked) {
                 showAirspaceLayer(layer);
@@ -273,13 +211,13 @@
         });
     }
 
-    function refreshAirspaceFromFAA() {
+    function refreshAirspaceFromENAIRE() {
         var btn = $("airspace-refresh-btn");
         if (!btn || btn.disabled) return;
         btn.disabled = true;
         var originalText = btn.textContent;
         btn.textContent = "Refreshing…";
-        setStatus("airspace-status", "Refreshing from FAA…");
+        setStatus("airspace-status", "Refreshing from ENAIRE…");
 
         fetch("/airspace/refresh", { method: "POST" })
             .then(function (r) {
@@ -305,7 +243,7 @@
                 if (failed.length) {
                     setStatus("airspace-status", "Refreshed (failed: " + failed.join(", ") + ")", true);
                 } else {
-                    setStatus("airspace-status", "Refreshed from FAA.");
+                    setStatus("airspace-status", "Refreshed from ENAIRE.");
                 }
             })
             .catch(function (e) {
@@ -408,11 +346,11 @@
     function wireToggles() {
         $("toggle-airspace").addEventListener("change", syncAirspace);
         AIRSPACE_LAYERS.forEach(function (layer) {
-            var el = $("toggle-" + layer.replace("_", "-"));
+            var el = $("toggle-" + layer.replace(/_/g, "-"));
             if (el) el.addEventListener("change", syncAirspace);
         });
         var refreshBtn = $("airspace-refresh-btn");
-        if (refreshBtn) refreshBtn.addEventListener("click", refreshAirspaceFromFAA);
+        if (refreshBtn) refreshBtn.addEventListener("click", refreshAirspaceFromENAIRE);
 
         $("toggle-parcels").addEventListener("change", function () {
             if (this.checked) {

@@ -233,7 +233,7 @@ def flask_server_kml_overlay(overlay_id):
     )
 
 
-# Recovery overlays (FAA airspace, TFRs, MD parcels). Auth gated when
+# Recovery overlays (ENAIRE airspace, MD parcels). Auth gated when
 # RECOVERY_API_KEY is set in the environment, intended for use behind
 # Cloudflare with a Transform Rule injecting X-Recovery-Key.
 RECOVERY_API_KEY = os.environ.get("RECOVERY_API_KEY", "")
@@ -274,8 +274,8 @@ def flask_airspace_layer(layer):
     if data is None:
         return flask.jsonify({"error": "unknown or uncached layer", "layer": layer}), 404
     response = flask.jsonify(data)
-    max_age = 60 if layer == "tfr" else 300
-    response.headers["Cache-Control"] = "public, max-age=" + str(max_age)
+    # ENAIRE publishes on the 28-day AIRAC cycle, so this changes rarely.
+    response.headers["Cache-Control"] = "public, max-age=300"
     return response
 
 

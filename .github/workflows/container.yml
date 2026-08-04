@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - 'master'
+      - 'UB-Spain'
     tags:
       - 'v*'
   pull_request:
     branches:
       - master
+      - UB-Spain
   workflow_dispatch:
 
 permissions:

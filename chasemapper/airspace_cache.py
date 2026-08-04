@@ -7,14 +7,25 @@
 #
 
 """
-Server-side cache for FAA airspace + TFR overlays.
+Server-side cache for Spanish airspace overlays.
 
-Fetches Class B/C/D/E, Special Use Airspace, and TFRs from FAA endpoints,
-filters to a regional bounding box (MD/PA/DE/VA/WV), persists to disk, and
-serves cached GeoJSON to the chasemapper frontend. Background threads refresh
-the cache (12h for airspace, 15min for TFRs).
+Fetches ICAO airspace for the northern half of Spain from ENAIRE (the Spanish
+ANSP) and serves cached GeoJSON to the chasemapper frontend. Filters to a
+regional bounding box, persists to disk, and refreshes in the background.
+
+Source is the ENAIRE "Aero VIGOR" ArcGIS FeatureServer, layer 41 (ESPACIOS
+AEREOS), which is AIXM-derived and carries the full ICAO attribute set:
+
+    https://servais.enaire.es/insignia/rest/services/INSIGNIA_SRV/
+        Aero_SRV_VIGOR_V2/FeatureServer/41
+
+Note there is no temporary-restriction layer here. ENAIRE's NOTAM service
+requires an API token, so activation of the D/R/TSA/TRA areas below is NOT
+reflected. Those areas are drawn unconditionally, which is the conservative
+choice, but NOTAMs must still be checked separately before flight.
 """
 
+import html
 import json
 import logging
 import os
@@ -24,41 +35,76 @@ import time
 import requests
 
 
-REGION_BBOX = {"lat_min": 36.5, "lat_max": 42.5, "lon_min": -83.7, "lon_max": -74.6}
+# Northern half of mainland Spain, plus enough margin for a chase to drift.
+REGION_BBOX = {"lat_min": 39.5, "lat_max": 44.5, "lon_min": -10.0, "lon_max": 4.5}
 AIRSPACE_REFRESH_SEC = 12 * 60 * 60
-TFR_REFRESH_SEC = 15 * 60
 CACHE_DIR = os.path.join("cache", "airspace")
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT = 60
 
-STALE_THRESHOLD_SEC = {
-    "class_b": 24 * 60 * 60,
-    "class_c": 24 * 60 * 60,
-    "class_d": 24 * 60 * 60,
-    "class_e": 24 * 60 * 60,
-    "sua": 24 * 60 * 60,
-    "tfr": 60 * 60,
+# ENAIRE publishes on the AIRAC cycle (28 days), so a day-old cache is fine.
+STALE_THRESHOLD_SEC = 24 * 60 * 60
+
+_AIRSPACE_URL = (
+    "https://servais.enaire.es/insignia/rest/services/INSIGNIA_SRV/"
+    "Aero_SRV_VIGOR_V2/FeatureServer/41/query"
+)
+
+LAYERS = ("ctr", "tma", "cta", "atz", "restricted", "military", "rmz_tmz")
+
+# ENAIRE TYPE_CODE values grouped into the layers the UI exposes. The "-P"
+# suffixed codes are the sector subdivisions of their parent area (e.g. TMA-P
+# "TGAL-1" is part of the Galicia TMA) and carry real vertical limits, so they
+# belong with the parent type.
+#
+# Deliberately excluded, because they would blanket the map or are not
+# restrictions a balloon can bust:
+#   FIR, FIR-A, FIR-P, UIR, OCA, NAS, FRA, FRA-P, SRR, RVSMTA - region-scale
+#   ATCSMA  - ATC surveillance minimum altitudes (a vectoring aid, not a volume)
+#   DEL     - delegation of airspace between ATC units (administrative)
+#   SECTOR, FREQ, LFR, REDUCCION_V - VFR sectors / frequency areas
+#   ENR_5_5, ZRVF, PROTECT - sporting, photographic and nature areas, all
+#                            capped around 400-1000 ft AGL
+_LAYER_TYPES = {
+    "ctr": ("CTR", "CTR-P"),
+    "tma": ("TMA", "TMA-P"),
+    "cta": ("CTA", "CTA-P"),
+    "atz": ("ATZ", "FIZ"),
+    "restricted": ("D", "R", "P", "Prohibido_Sobrevuelo", "PROHIBIDO VFR"),
+    "military": ("TSA", "TRA"),
+    "rmz_tmz": ("RMZ", "TMZ"),
 }
 
-_CLASS_AIRSPACE_URL = (
-    "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/"
-    "Class_Airspace/FeatureServer/0/query"
-)
-_SUA_URL = (
-    "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/"
-    "Special_Use_Airspace/FeatureServer/0/query"
-)
-_TFR_WFS_URL = "https://tfr.faa.gov/geoserver/TFR/ows"
+# Vertical limits come from the DISTVERT{LOWER,UPPER}_* triplet, NOT from
+# LOWER_VAL / UPPER_VAL. Those two look like altitudes in feet but are render
+# sort keys: ENAIRE adds a flat +12200 ft to every ground-referenced value, so
+# CTR BILBAO (1000 ft AGL) reports UPPER_VAL 13200. Verified against the whole
+# northern-Spain set - the offset is exactly 12200 for the ALT/HEIG/HEI datums
+# and 0 for STD/HEIS/HEISG. Using them as altitudes understates nothing but
+# wildly overstates low-level airspace, so they are ignored here.
+_UOM_TO_FEET = {"FT": 1.0, "M": 3.28084, "FL": 100.0}
 
-LAYERS = ("class_b", "class_c", "class_d", "class_e", "sua", "tfr")
+# Reference datum per ENAIRE's own rendering of each code in NIVEL_INF/NIVEL_SUP:
+#   STD -> "FL245",  HEIS -> "ft AMSL",  ALT -> "ft ALT",
+#   HEIG -> "ft AGL"/"SFC",  HEI/HEISG -> bare "ft"/"SFC"
+_DATUM_BY_CODE = {
+    "STD": "FL",
+    "HEIS": "AMSL",
+    "ALT": "AMSL",
+    "HEIG": "AGL",
+    "HEI": "AGL",
+    "HEISG": "AGL",
+}
 
-_CLASS_WHERE = {
-    "class_b": "LOCAL_TYPE='CLASS_B'",
-    "class_c": "LOCAL_TYPE='CLASS_C'",
-    "class_d": "LOCAL_TYPE='CLASS_D'",
-    # Class E is split across CLASS_E and CLASS_E2 through CLASS_E6 in the
-    # FAA layer. Filtering on LOCAL_TYPE='CLASS_E' returns only the broad
-    # en-route area and omits the useful surface/transition airspace.
-    "class_e": "CLASS='E'",
+# ICAO operating-hour abbreviations used in WORKHR_CODE.
+_WORKHR_LABELS = {
+    "H24": "Continuous (H24)",
+    "HJ": "Sunrise to sunset (HJ)",
+    "HN": "Sunset to sunrise (HN)",
+    "NOTAM": "Activated by NOTAM",
+    "HR ATS": "During ATS hours",
+    "HR AD": "During aerodrome hours",
+    # RMK means "see the remark", which WORKHRRMK_TXT already supplies.
+    "RMK": "",
 }
 
 _started = False
@@ -130,42 +176,6 @@ def _bbox_geometry_param():
     return "{},{},{},{}".format(b["lon_min"], b["lat_min"], b["lon_max"], b["lat_max"])
 
 
-def _fetch_class_airspace(layer):
-    params = {
-        "where": _CLASS_WHERE[layer],
-        "geometry": _bbox_geometry_param(),
-        "geometryType": "esriGeometryEnvelope",
-        "spatialRel": "esriSpatialRelIntersects",
-        "inSR": "4326",
-        "outSR": "4326",
-        "outFields": "*",
-        "returnGeometry": "true",
-        "f": "geojson",
-        "resultRecordCount": 2000,
-    }
-    r = requests.get(_CLASS_AIRSPACE_URL, params=params, timeout=REQUEST_TIMEOUT)
-    r.raise_for_status()
-    return r.json()
-
-
-def _fetch_sua():
-    params = {
-        "where": "1=1",
-        "geometry": _bbox_geometry_param(),
-        "geometryType": "esriGeometryEnvelope",
-        "spatialRel": "esriSpatialRelIntersects",
-        "inSR": "4326",
-        "outSR": "4326",
-        "outFields": "*",
-        "returnGeometry": "true",
-        "f": "geojson",
-        "resultRecordCount": 2000,
-    }
-    r = requests.get(_SUA_URL, params=params, timeout=REQUEST_TIMEOUT)
-    r.raise_for_status()
-    return r.json()
-
-
 def _geometry_intersects_region(geom):
     """Return True when a GeoJSON geometry's bounds overlap the region."""
     if not geom:
@@ -202,22 +212,139 @@ def _geometry_intersects_region(geom):
     )
 
 
-def _fetch_tfrs():
-    """Fetch active TFR polygons from the WFS feed used by the FAA map."""
-    params = {
-        "service": "WFS",
-        "version": "1.1.0",
-        "request": "GetFeature",
-        "typeName": "TFR:V_TFR_LOC",
-        "maxFeatures": 1000,
-        "outputFormat": "application/json",
-        "srsname": "EPSG:4326",
+def _clean_text(value):
+    """Trim, collapse whitespace and unescape HTML entities.
+
+    ENAIRE returns HTML-escaped text ("&amp;") and pads several fields with
+    leading whitespace, so raw values are not display-ready.
+    """
+    if value is None:
+        return ""
+    text = html.unescape(str(value))
+    return " ".join(text.split())
+
+
+def _vertical_limit(props, side):
+    """Vertical limit for side ("LOWER"/"UPPER") as (feet, datum).
+
+    Returns (None, "") when the limit is not specified. Feet are exact for the
+    AMSL and FL datums; an AGL value cannot be converted to AMSL without terrain
+    elevation, so the datum is reported alongside and must not be ignored.
+    """
+    raw = props.get("DISTVERT%s_VAL" % side)
+    uom = _clean_text(props.get("DISTVERT%s_UOM" % side)).upper()
+    code = _clean_text(props.get("DISTVERT%s_CODE" % side)).upper()
+
+    if raw is None or uom not in _UOM_TO_FEET:
+        return None, ""
+
+    try:
+        feet = float(raw) * _UOM_TO_FEET[uom]
+    except (TypeError, ValueError):
+        return None, ""
+
+    return feet, _DATUM_BY_CODE.get(code, "")
+
+
+def _format_schedule(props):
+    """Human-readable operating hours from WORKHR_CODE / WORKHRRMK_TXT."""
+    code = _clean_text(props.get("WORKHR_CODE")).upper()
+    remark = _clean_text(props.get("WORKHRRMK_TXT"))
+
+    label = _WORKHR_LABELS.get(code, code)
+    if label and remark and label.lower() != remark.lower():
+        return "%s - %s" % (label, remark)
+    return label or remark
+
+
+def _zone_flags(props):
+    """Names of the mandatory-zone flags set on a feature (RMZ/TMZ/FPMZ/FBZ)."""
+    return [
+        flag
+        for flag in ("RMZ", "TMZ", "FPMZ", "FBZ")
+        if _clean_text(props.get(flag)) == "1"
+    ]
+
+
+def _normalise_feature(feature):
+    """Map ENAIRE's AIXM field names onto a stable set the frontend can rely on.
+
+    Raw fields are left in place; the normalised keys are added alongside.
+    """
+    props = dict(feature.get("properties") or {})
+
+    type_code = _clean_text(props.get("TYPE_CODE"))
+    ident = _clean_text(props.get("IDENT_TXT"))
+    name = _clean_text(props.get("NAME_TXT")) or ident or type_code
+
+    frequency = _clean_text(props.get("FREQTRANS_VAL"))
+    freq_uom = _clean_text(props.get("FREQ_UOM"))
+    if frequency and freq_uom.upper() == "MHZ":
+        frequency = "%s MHz" % frequency
+
+    lower_ft, lower_datum = _vertical_limit(props, "LOWER")
+    upper_ft, upper_datum = _vertical_limit(props, "UPPER")
+
+    props.update(
+        {
+            "name": name,
+            "ident": ident,
+            "type_code": type_code,
+            "airspace_class": _clean_text(props.get("CLASS")),
+            # NIVEL_INF/NIVEL_SUP are ENAIRE's own display strings and are the
+            # authoritative human-readable limits ("SFC", "1000ft AGL", "FL145").
+            "lower": _clean_text(props.get("NIVEL_INF")),
+            "upper": _clean_text(props.get("NIVEL_SUP")),
+            "lower_ft": lower_ft,
+            "lower_datum": lower_datum,
+            "upper_ft": upper_ft,
+            "upper_datum": upper_datum,
+            "schedule": _format_schedule(props),
+            "frequency": frequency,
+            "remarks": _clean_text(props.get("REMARKS_TXT")),
+            "zones": _zone_flags(props),
+        }
+    )
+
+    return {
+        "type": "Feature",
+        "geometry": feature.get("geometry"),
+        "properties": props,
     }
-    r = requests.get(_TFR_WFS_URL, params=params, timeout=REQUEST_TIMEOUT)
+
+
+def _fetch_airspace(layer):
+    """Fetch and normalise one layer's airspace from ENAIRE."""
+    types = _LAYER_TYPES[layer]
+    where = "TYPE_CODE IN (%s)" % ",".join("'%s'" % t for t in types)
+
+    params = {
+        "where": where,
+        "geometry": _bbox_geometry_param(),
+        "geometryType": "esriGeometryEnvelope",
+        "spatialRel": "esriSpatialRelIntersects",
+        "inSR": "4326",
+        "outSR": "4326",
+        "outFields": "*",
+        "returnGeometry": "true",
+        "f": "geojson",
+        "resultRecordCount": 4000,
+    }
+    r = requests.get(_AIRSPACE_URL, params=params, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
     raw = r.json()
+
     if not isinstance(raw, dict) or raw.get("type") != "FeatureCollection":
-        raise ValueError("unexpected TFR WFS response shape")
+        snippet = json.dumps(raw)[:300] if isinstance(raw, (dict, list)) else repr(raw)[:300]
+        raise ValueError("unexpected response shape for {}: {}".format(layer, snippet))
+
+    # ArcGIS signals truncation rather than failing, so surface it loudly.
+    if raw.get("exceededTransferLimit") or (raw.get("properties") or {}).get(
+        "exceededTransferLimit"
+    ):
+        logging.warning(
+            "Airspace cache: %s hit the server record limit, results are truncated", layer
+        )
 
     features = []
     for item in raw.get("features", []):
@@ -225,40 +352,24 @@ def _fetch_tfrs():
             geom = item.get("geometry")
             if not geom:
                 continue
+            # The bbox is applied server-side; re-check so a change in the
+            # upstream query parameters cannot silently widen the region.
             if not _geometry_intersects_region(geom):
                 continue
-
-            props = dict(item.get("properties") or {})
-            notam_key = props.get("NOTAM_KEY") or ""
-            if notam_key:
-                props.setdefault("notam_id", notam_key.split("-", 1)[0])
-            props.setdefault("type", props.get("LEGAL"))
-            props.setdefault("description", props.get("TITLE"))
-            props.setdefault(
-                "last_modified", props.get("LAST_MODIFICATION_DATETIME")
-            )
-            features.append({"type": "Feature", "geometry": geom, "properties": props})
+            features.append(_normalise_feature(item))
         except Exception as e:
-            logging.debug("Airspace cache: skipping malformed TFR item: %s", e)
+            logging.debug("Airspace cache: skipping malformed %s feature: %s", layer, e)
             continue
 
     return {"type": "FeatureCollection", "features": features}
 
 
 def _refresh_layer(layer):
-    fetched_at = time.time()
-    if layer in _CLASS_WHERE:
-        geo = _fetch_class_airspace(layer)
-    elif layer == "sua":
-        geo = _fetch_sua()
-    elif layer == "tfr":
-        geo = _fetch_tfrs()
-    else:
+    if layer not in _LAYER_TYPES:
         raise ValueError("unknown layer: " + layer)
 
-    if not isinstance(geo, dict) or geo.get("type") != "FeatureCollection":
-        snippet = json.dumps(geo)[:300] if isinstance(geo, (dict, list)) else repr(geo)[:300]
-        raise ValueError("unexpected response shape for {}: {}".format(layer, snippet))
+    fetched_at = time.time()
+    geo = _fetch_airspace(layer)
 
     _write_layer(layer, geo, fetched_at)
     logging.info(
@@ -299,10 +410,7 @@ def get_status():
         fetched_at = meta.get("fetched_at") if meta else None
         feature_count = meta.get("feature_count") if meta else 0
         age_seconds = (now - fetched_at) if fetched_at else None
-        stale = (
-            age_seconds is not None
-            and age_seconds > STALE_THRESHOLD_SEC.get(layer, 24 * 60 * 60)
-        )
+        stale = age_seconds is not None and age_seconds > STALE_THRESHOLD_SEC
         out[layer] = {
             "cached": cached,
             "fetched_at": fetched_at,
@@ -314,7 +422,7 @@ def get_status():
 
 
 def force_refresh_all():
-    """Re-fetch every layer from FAA now. Runs layers in parallel; serialised
+    """Re-fetch every layer from ENAIRE now. Runs layers in parallel; serialised
     with a global lock so concurrent button presses coalesce into one round.
     Returns a result dict with per-layer success flags and the post-refresh status."""
     global _refresh_in_progress
@@ -363,13 +471,7 @@ def start_background_refresh():
         else:
             logging.info("Airspace cache: loading %s from cache", layer)
 
-    for layer in _CLASS_WHERE:
+    for layer in LAYERS:
         threading.Thread(
             target=_refresh_loop, args=(layer, AIRSPACE_REFRESH_SEC), daemon=True
         ).start()
-    threading.Thread(
-        target=_refresh_loop, args=("sua", AIRSPACE_REFRESH_SEC), daemon=True
-    ).start()
-    threading.Thread(
-        target=_refresh_loop, args=("tfr", TFR_REFRESH_SEC), daemon=True
-    ).start()
