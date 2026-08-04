@@ -1,7 +1,7 @@
 services:
   chasemapper:
     container_name: chasemapper
-    image: ghcr.io/huonghuy/chasemapper-aprs:master
+    image: ghcr.io/huonghuy/chasemapper-aprs:Spain
     # To build locally instead of pulling, comment `image:` above and uncomment:
     # build: .
     restart: always
