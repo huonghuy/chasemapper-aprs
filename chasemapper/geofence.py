@@ -77,7 +77,22 @@ class GeofenceParseError(Exception):
     """Raised when a KML upload cannot be parsed into a geofence."""
 
 
-# ---- KML parsing -------------------------------------------------------
+def _close_ring(polygon):
+    """Strip repeated trailing vertices in place, then require 3 remaining.
+
+    Bounder exports sometimes repeat the closing waypoint, and hand-drawn
+    rings can double a vertex on a slow click. Leaflet closes the ring
+    itself, so the explicit close is redundant either way. Both entry
+    points share this so KML and on-map drawing agree on what a valid ring is.
+    """
+    while len(polygon) > 3 and polygon[-1] == polygon[-2]:
+        polygon.pop()
+    if len(polygon) > 3 and polygon[0] == polygon[-1]:
+        polygon.pop()
+    if len(polygon) < 3:
+        raise GeofenceParseError(
+            "Polygon needs at least 3 distinct vertices (got %d)." % len(polygon)
+        )
 
 
 def _findall_ns(elem, tag):
@@ -166,18 +181,7 @@ def parse_kml_geofence(kml_bytes):
             )
         polygon.append([lat, lon])
 
-    # Bounder export sometimes repeats the closing waypoint; collapse
-    # back-to-back duplicates and the trailing close (Leaflet draws the
-    # ring closed regardless).
-    while len(polygon) > 3 and polygon[-1] == polygon[-2]:
-        polygon.pop()
-    if len(polygon) > 3 and polygon[0] == polygon[-1]:
-        polygon.pop()
-
-    if len(polygon) < 3:
-        raise GeofenceParseError(
-            "Polygon needs at least 3 distinct vertices (got %d)." % len(polygon)
-        )
+    _close_ring(polygon)
 
     # Description carries Remain inside/outside + Min/Max altitude.
     desc_el = _find_ns(chosen, "kml:description", "description")
@@ -205,8 +209,6 @@ def parse_kml_geofence(kml_bytes):
     }
 
 
-# ---- Polygon validation (for client-drawn geofences) -------------------
-
 
 def build_geofence_from_polygon(polygon, min_alt, max_alt, remain):
     """Validate a user-drawn polygon and return the canonical geofence
@@ -232,16 +234,7 @@ def build_geofence_from_polygon(polygon, min_alt, max_alt, remain):
             )
         cleaned.append([lat, lon])
 
-    # Match the KML parser: drop a duplicate closing vertex if present.
-    while len(cleaned) > 3 and cleaned[-1] == cleaned[-2]:
-        cleaned.pop()
-    if len(cleaned) > 3 and cleaned[0] == cleaned[-1]:
-        cleaned.pop()
-
-    if len(cleaned) < 3:
-        raise GeofenceParseError(
-            "Polygon needs at least 3 distinct vertices (got %d)." % len(cleaned)
-        )
+    _close_ring(cleaned)
 
     try:
         min_alt_f = float(min_alt)
@@ -262,8 +255,6 @@ def build_geofence_from_polygon(polygon, min_alt, max_alt, remain):
         "remain": remain_norm,
     }
 
-
-# ---- Persistence -------------------------------------------------------
 
 # How long a cleared/overwritten geofence stays in the trash before
 # the next save sweeps it away. Long enough to recover from same-flight

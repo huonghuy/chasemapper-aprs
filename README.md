@@ -41,35 +41,38 @@ Everything else (APRS-IS, SPOT, predictions, maps) is location-agnostic.
 
 The fastest path from zero to a running map.
 ```bash
-    git clone https://github.com/huonghuy/chasemapper-aprs.git
-    cd chasemapper-aprs
+git clone https://github.com/huonghuy/chasemapper-aprs.git
+cd chasemapper-aprs
 ```
-  1. Create your config
-```bash
-    cp horusmapper.cfg.example horusmapper.cfg
-    # Edit horusmapper.cfg — set at least:
-    #   - default_lat / default_lon (map center)
-    #   - your APRS-IS profile (callsigns for cars + balloons)
-```
-  2. Create your .env (see "Environment Variables" section below)
-```bash
-    touch .env
-```  
-    # If you're not exposing this publicly, you can leave .env empty —
-    # the SPOT + RECOVERY_API_KEY features just stay disabled.
 
-    # 3. Create a docker-compose.yml from the example
-```bash    
-    cp docker-compose.yml.example docker-compose.yml
-    # Edit if you want to build locally instead of pulling the image,
-    # or to add an offline map tile mount.
+1. Create your config
+```bash
+cp horusmapper.cfg.example horusmapper.cfg
+# Edit horusmapper.cfg — set at least:
+#   - default_lat / default_lon (map center)
+#   - your APRS-IS profile (callsigns for cars + balloons)
 ```
-    # 4. Start it
-```bash    
-    docker compose up -d
+
+2. Create your .env (see "Environment Variables" section below)
+```bash
+touch .env
+# If you're not exposing this publicly, you can leave .env empty —
+# the SPOT + RECOVERY_API_KEY features just stay disabled.
 ```
-    # 5. Open the UI
-    # http://<host-ip>:5001/
+
+3. Create a docker-compose.yml from the example
+```bash
+cp docker-compose.yml.example docker-compose.yml
+# Edit if you want to build locally instead of pulling the image,
+# or to add an offline map tile mount.
+```
+
+4. Start it
+```bash
+docker compose up -d
+```
+
+5. Open the UI at `http://<host-ip>:5001/`
 
 To see logs: `docker compose logs -f chasemapper`. To stop:
 `docker compose down`. To pull a newer build:
@@ -136,8 +139,9 @@ Chasemapper reads secrets from environment variables to keep them out of
 the committed config. Create a `.env` file in the repo root (already
 gitignored):
 ```bash
-    touch .env
+touch .env
 ```
+
 ### Variables
 
 | Variable             | Required?  | Purpose                                       |
@@ -159,31 +163,38 @@ warning and continues.
 3. The Feed ID is the long alphanumeric token in the page URL
 4. Paste each into `.env`:
 ```bash
-       RECOVERY_API_KEY=...
-       SPOT_FEED_COMMAND=XXXXXXXXXXXXXXXXXXXX
-       SPOT_FEED_HAPL=YYYYYYYYYYYYYYYYYYYY
+RECOVERY_API_KEY=...
+SPOT_FEED_COMMAND=XXXXXXXXXXXXXXXXXXXX
+SPOT_FEED_HAPL=YYYYYYYYYYYYYYYYYYYY
 ```
+
 ### Wiring it into docker-compose
 
 Add `env_file:` to the chasemapper service in your `docker-compose.yml`:
-```yml
-    services:
-      chasemapper:
-        # ... your existing config ...
-        env_file:
-          - .env
+```yaml
+services:
+  chasemapper:
+    # ... your existing config ...
+    env_file:
+      - .env
 ```
+
 Then start as usual:
 ```bash
-    docker compose up -d
+docker compose up -d
 ```
+
 ### Verify
 
-    docker compose logs chasemapper | grep SPOT
+```bash
+docker compose logs chasemapper | grep SPOT
+```
 
 You should see:
 
-    SPOT: started listener for 2 feed(s), poll interval 300s
+```
+SPOT: started listener for 2 feed(s), poll interval 300s
+```
 
 If you see `SPOT: <callsign> skipped — env var ... is not set`, the
 variable isn't reaching the container — check `env_file:` is set on the

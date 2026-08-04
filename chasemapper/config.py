@@ -73,6 +73,15 @@ default_config = {
 }
 
 
+def _csv_callsigns(config, section, key):
+    """Comma-separated callsigns, upper-cased. Missing key -> empty list."""
+    try:
+        raw = config.get(section, key)
+    except Exception:
+        return []
+    return [c.strip().upper() for c in raw.split(",") if c.strip()]
+
+
 def parse_config_file(filename):
     """ Parse a Configuration File """
 
@@ -347,22 +356,12 @@ def parse_config_file(filename):
 
             # Per-profile APRS-IS callsigns. Optional — fall back to empty
             # lists so profiles without these keys still work.
-            try:
-                _profile_aprsis_balloons = [
-                    c.strip().upper()
-                    for c in config.get(_profile_section, "aprsis_balloon_callsigns").split(",")
-                    if c.strip()
-                ]
-            except Exception:
-                _profile_aprsis_balloons = []
-            try:
-                _profile_aprsis_cars = [
-                    c.strip().upper()
-                    for c in config.get(_profile_section, "aprsis_car_callsigns").split(",")
-                    if c.strip()
-                ]
-            except Exception:
-                _profile_aprsis_cars = []
+            _profile_aprsis_balloons = _csv_callsigns(
+                config, _profile_section, "aprsis_balloon_callsigns"
+            )
+            _profile_aprsis_cars = _csv_callsigns(
+                config, _profile_section, "aprsis_car_callsigns"
+            )
             try:
                 _profile_aprsis_active = config.get(
                     _profile_section, "aprsis_active_car_callsign"

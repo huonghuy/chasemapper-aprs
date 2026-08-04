@@ -75,6 +75,15 @@ def _flush_locked():
         logging.warning("car_track_cache: flush failed: %s", e)
 
 
+def _rollover_locked(reason):
+    """Start a fresh UTC day: drop the buffer and the file. Caller holds _lock."""
+    global _day_key
+    logging.info("car_track_cache: %s", reason)
+    _points.clear()
+    _day_key = _today_utc()
+    _wipe_disk()
+
+
 def _trim_locked():
     """Drop points older than MAX_AGE_SEC and cap MAX_POINTS. Caller holds _lock."""
     cutoff = time.time() - MAX_AGE_SEC
@@ -107,10 +116,7 @@ def _load_from_disk():
                 "car_track_cache: loaded %d points from today's cache", len(_points)
             )
         else:
-            logging.info("car_track_cache: discarding stale cache (day rollover)")
-            _points = []
-            _day_key = _today_utc()
-            _wipe_disk()
+            _rollover_locked("discarding stale cache")
     except Exception as e:
         logging.warning("car_track_cache: load failed (%s); starting fresh", e)
         _points = []
@@ -121,12 +127,8 @@ def add_point(lat, lon, alt=0.0, heading=0.0):
     """Append a chase-car position. Throttled disk writes; day-rolls if needed."""
     global _day_key, _last_write
     with _lock:
-        today = _today_utc()
-        if _day_key != today:
-            logging.info("car_track_cache: UTC day rollover, clearing buffer")
-            _points.clear()
-            _day_key = today
-            _wipe_disk()
+        if _day_key != _today_utc():
+            _rollover_locked("UTC day rollover")
 
         try:
             lat = float(lat)
@@ -170,13 +172,9 @@ def _rollover_loop():
     while True:
         time.sleep(60)
         try:
-            today = _today_utc()
             with _lock:
-                if _day_key != today:
-                    logging.info("car_track_cache: scheduled rollover wipe")
-                    _points.clear()
-                    _day_key = today
-                    _wipe_disk()
+                if _day_key != _today_utc():
+                    _rollover_locked("scheduled rollover wipe")
         except Exception as e:
             logging.warning("car_track_cache: rollover loop error: %s", e)
 

@@ -77,21 +77,29 @@ class APRSISListener:
         with self._lock:
             self._send_filter()
 
-    def _send_filter(self):
-        """Send updated budlist filter. Must be called under self._lock.
+    def _filter_body(self):
+        """Budlist filter for every tracked callsign, e.g. "b/KC1RBW*/N0CALL*".
 
-        Strip SSIDs from the filter so the server matches all SSIDs of each
-        base callsign — this avoids case-sensitivity issues with alphabetic
-        SSIDs (e.g. -i from aprs.fi iOS). Exact matching still happens in
-        _handle_line using the full stored callsign.
+        SSIDs are stripped and wildcarded so the server matches all SSIDs of
+        each base callsign — this avoids case-sensitivity issues with
+        alphabetic SSIDs (e.g. -i from aprs.fi iOS). Exact matching still
+        happens in _handle_line using the full stored callsign.
+        Returns "" when no callsigns are tracked.
         """
-        if self._sock is None:
-            return
         all_callsigns = self.balloon_callsigns | self.car_callsigns
         if not all_callsigns:
-            return
+            return ""
         base_callsigns = sorted(set(cs.split("-")[0] for cs in all_callsigns))
-        filter_line = "#filter b/{}\r\n".format("/".join(b + "*" for b in base_callsigns))
+        return "b/" + "/".join(b + "*" for b in base_callsigns)
+
+    def _send_filter(self):
+        """Send updated budlist filter. Must be called under self._lock."""
+        if self._sock is None:
+            return
+        filter_body = self._filter_body()
+        if not filter_body:
+            return
+        filter_line = "#filter {}\r\n".format(filter_body)
         logging.info("APRS-IS: sending filter: %s" % filter_line.strip())
         try:
             self._sock.sendall(filter_line.encode())
@@ -109,22 +117,10 @@ class APRSISListener:
                 with self._lock:
                     self._sock = sock
 
-                # Build initial filter and include it in the login line — this
-                # is the most reliable way to set the filter (some servers
-                # apply login-line filters more aggressively than #filter).
-                # Use wildcard SSIDs (e.g. "KC1RBW*") so all SSIDs of a base
-                # callsign match — this also avoids case issues with alphabetic
-                # SSIDs like "-i" used by aprs.fi iOS.
-                all_callsigns = self.balloon_callsigns | self.car_callsigns
-                base_callsigns = sorted(set(cs.split("-")[0] for cs in all_callsigns))
-                filter_text = (
-                    "b/" + "/".join(b + "*" for b in base_callsigns)
-                    if base_callsigns
-                    else ""
-                )
-
+                # Carry the filter on the login line — some servers apply
+                # login-line filters more aggressively than a later #filter.
                 login_line = "user {} pass -1 vers chasemapper 1.0 filter {}\r\n".format(
-                    self.login_callsign, filter_text
+                    self.login_callsign, self._filter_body()
                 )
                 logging.info("APRS-IS: login: %s" % login_line.strip())
                 sock.sendall(login_line.encode())

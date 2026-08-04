@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+.pytest_cache/
 
 # Config (contains personal/local settings - use the .example as the template)
 horusmapper.cfg

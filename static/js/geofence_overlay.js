@@ -189,6 +189,34 @@
         });
     }
 
+    // Every geofence mutation has the same shape: send, parse the body whether
+    // or not the status was ok, adopt the server's new record. The originating
+    // client applies it locally rather than waiting for the server's
+    // geofence_update broadcast to come back around.
+    function mutateGeofence(profile, url, opts, verb, onSuccess) {
+        fetch(url, opts)
+            .then(function (r) {
+                return r.json().then(function (j) { return { ok: r.ok, body: j }; });
+            })
+            .then(function (res) {
+                if (!res.ok) {
+                    setStatus(verb + " failed: " + (res.body.error || "unknown"), true);
+                    return;
+                }
+                if (onSuccess) onSuccess();
+                state.cache[profile] = res.body.geofence || null;
+                state.trashCache[profile] = !!res.body.has_trash;
+                if (profile === activeProfile()) drawForProfile(profile);
+            })
+            .catch(function (e) {
+                setStatus(verb + " error: " + e.message, true);
+            });
+    }
+
+    function geofenceUrl(profile) {
+        return "/geofence/" + encodeURIComponent(profile);
+    }
+
     function uploadFile(file) {
         var profile = activeProfile();
         if (!profile) {
@@ -199,86 +227,26 @@
         var fd = new FormData();
         fd.append("kml", file);
         setStatus("Uploading " + file.name + "…");
-        fetch("/geofence/" + encodeURIComponent(profile), {
-            method: "POST",
-            body: fd
-        })
-        .then(function (r) {
-            return r.json().then(function (j) { return { ok: r.ok, body: j }; });
-        })
-        .then(function (res) {
-            if (!res.ok) {
-                setStatus("Upload failed: " + (res.body.error || "unknown"), true);
-                return;
-            }
-            // Server will broadcast geofence_update; we still update locally
-            // so the originating client doesn't wait for the round-trip.
-            state.cache[profile] = res.body.geofence;
-            state.trashCache[profile] = !!res.body.has_trash;
-            if (profile === activeProfile()) drawForProfile(profile);
-        })
-        .catch(function (e) {
-            setStatus("Upload error: " + e.message, true);
-        });
+        mutateGeofence(profile, geofenceUrl(profile), { method: "POST", body: fd }, "Upload");
     }
 
     function clearActive() {
         var profile = activeProfile();
         if (!profile) return;
         if (!confirm("Clear geofence for profile '" + profile + "'? You'll be able to Restore it for 2 days.")) return;
-        fetch("/geofence/" + encodeURIComponent(profile), { method: "DELETE" })
-            .then(function (r) {
-                return r.json().then(function (j) { return { ok: r.ok, body: j }; });
-            })
-            .then(function (res) {
-                if (!res.ok) {
-                    setStatus("Clear failed (" + (res.body.error || "HTTP error") + ")", true);
-                    return;
-                }
-                state.cache[profile] = null;
-                state.trashCache[profile] = !!res.body.has_trash;
-                if (profile === activeProfile()) drawForProfile(profile);
-            })
-            .catch(function (e) {
-                setStatus("Clear error: " + e.message, true);
-            });
+        mutateGeofence(profile, geofenceUrl(profile), { method: "DELETE" }, "Clear");
     }
 
     function restoreActive() {
         var profile = activeProfile();
         if (!profile) return;
-        fetch("/geofence/" + encodeURIComponent(profile) + "/restore", {
-            method: "POST"
-        })
-        .then(function (r) {
-            return r.json().then(function (j) { return { ok: r.ok, body: j }; });
-        })
-        .then(function (res) {
-            if (!res.ok) {
-                setStatus("Restore failed: " + (res.body.error || "unknown"), true);
-                return;
-            }
-            state.cache[profile] = res.body.geofence;
-            state.trashCache[profile] = !!res.body.has_trash;
-            if (profile === activeProfile()) drawForProfile(profile);
-        })
-        .catch(function (e) {
-            setStatus("Restore error: " + e.message, true);
-        });
+        mutateGeofence(profile, geofenceUrl(profile) + "/restore", { method: "POST" }, "Restore");
     }
 
-    // ---- Copy "choppies waypoints" --------------------------------------
-    //
-    // Emits the exact format Pearl asked for in the chase Slack thread:
-    //
+    // Emits the chase-team clipboard format:
     //     Remain: inside
     //     Altitude: -500, 23000
     //     Waypoint: lat,lon
-    //     Waypoint: lat,lon
-    //     ...
-    //
-    // Works for both uploaded-KML and on-map-drawn geofences since
-    // they end up as the same record.
     function copyWaypoints() {
         var profile = activeProfile();
         var gf = state.cache[profile];
@@ -301,8 +269,6 @@
             setStatus("Clipboard helper unavailable.", true);
         }
     }
-
-    // ---- Draw mode ------------------------------------------------------
 
     function rebuildPreview() {
         var latlngs = state.drawMarkers.map(function (m) { return m.getLatLng(); });
@@ -442,27 +408,11 @@
             remain: inputs.remain
         };
         setStatus("Saving drawn geofence (" + polygon.length + " vertices)…");
-        fetch("/geofence/" + encodeURIComponent(profile), {
+        mutateGeofence(profile, geofenceUrl(profile), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body)
-        })
-        .then(function (r) {
-            return r.json().then(function (j) { return { ok: r.ok, body: j }; });
-        })
-        .then(function (res) {
-            if (!res.ok) {
-                setStatus("Save failed: " + (res.body.error || "unknown"), true);
-                return;
-            }
-            teardownDrawMode();
-            state.cache[profile] = res.body.geofence;
-            state.trashCache[profile] = !!res.body.has_trash;
-            if (profile === activeProfile()) drawForProfile(profile);
-        })
-        .catch(function (e) {
-            setStatus("Save error: " + e.message, true);
-        });
+        }, "Save", teardownDrawMode);
     }
 
     function wireUI() {
@@ -518,15 +468,10 @@
         // we always reflect the latest server state.
         onConfig: function (cfg) {
             syncCacheFromConfig(cfg);
+            // Redraw unconditionally: the profile may have switched, or the
+            // same profile's geofence may have changed underneath us.
             var profile = activeProfile();
-            if (profile && profile !== state.currentProfile) {
-                drawForProfile(profile);
-            } else if (profile) {
-                // Same profile, but its geofence may have changed (rare via
-                // this path; mostly server_settings_update during profile
-                // switches). Redraw to be safe.
-                drawForProfile(profile);
-            }
+            if (profile) drawForProfile(profile);
         },
 
         // SocketIO 'geofence_update' handler.

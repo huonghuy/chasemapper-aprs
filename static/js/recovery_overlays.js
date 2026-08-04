@@ -11,7 +11,10 @@
 (function () {
     "use strict";
 
-    var AIRSPACE_LAYERS = ["class_b", "class_c", "class_d", "class_e", "sua", "tfr"];
+    // Single source of truth for the layer set. Listed in draw order, lowest
+    // first: broad Class E areas sit below terminal airspace, SUA, and TFRs.
+    // Iteration order, pane names, and pane z-index all derive from this.
+    var AIRSPACE_LAYERS = ["class_e", "class_b", "class_c", "class_d", "sua", "tfr"];
 
     var AIRSPACE_STYLE = {
         class_b: { color: "#1f4ed8", weight: 2, fillOpacity: 0.05 },
@@ -22,17 +25,7 @@
         tfr:     { color: "#f97316", weight: 2, fillOpacity: 0.15 }
     };
 
-    // Separate SVG panes keep transparent polygons clickable without a
-    // full-map Canvas renderer swallowing clicks intended for lower layers.
-    // Broad Class E areas sit below terminal airspace, SUA, and TFRs.
-    var AIRSPACE_PANES = {
-        class_e: { name: "airspace-class-e", zIndex: 410 },
-        class_b: { name: "airspace-class-b", zIndex: 420 },
-        class_c: { name: "airspace-class-c", zIndex: 430 },
-        class_d: { name: "airspace-class-d", zIndex: 440 },
-        sua:     { name: "airspace-sua", zIndex: 450 },
-        tfr:     { name: "airspace-tfr", zIndex: 460 }
-    };
+    var AIRSPACE_PANE_BASE_Z = 410;
 
     var PARCEL_STYLE = { color: "#ea580c", weight: 1, fillOpacity: 0.08 };
     var SEARCH_CIRCLE_STYLE = { color: "#dc2626", weight: 2, dashArray: "6,6", fill: false };
@@ -46,7 +39,11 @@
         parcelCanvas: null,
         searchCircle: null,
         parcelTimer: null,
-        airspaceFetching: {}
+        airspaceFetching: {},
+        // Bumped by every FAA refresh. An in-flight GET compares the value it
+        // captured at request time before writing to state, so a response for
+        // the pre-refresh cache can't land on top of the new one.
+        airspaceGeneration: 0
     };
 
     function $(id) { return document.getElementById(id); }
@@ -84,6 +81,7 @@
         if (state.airspaceData[layer] || state.airspaceFetching[layer]) {
             return Promise.resolve(state.airspaceData[layer]);
         }
+        var generation = state.airspaceGeneration;
         state.airspaceFetching[layer] = true;
         return fetch("/airspace/" + layer)
             .then(function (r) {
@@ -91,11 +89,13 @@
                 return r.json();
             })
             .then(function (data) {
+                if (generation !== state.airspaceGeneration) return null;
                 state.airspaceData[layer] = data;
                 state.airspaceFetching[layer] = false;
                 return data;
             })
             .catch(function (e) {
+                if (generation !== state.airspaceGeneration) return null;
                 state.airspaceFetching[layer] = false;
                 setStatus("airspace-status", "Failed to load " + layer + ": " + e.message, true);
                 return null;
@@ -112,13 +112,15 @@
         return "";
     }
 
-    function escapeHtml(value) {
-        return String(value)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#039;");
+    // Popup detail rows all share one shape: skip empties, wrap in <small>,
+    // escape on the way in so no call site can forget. htmlEscape comes from
+    // overlays.js, which index.html loads ahead of this module.
+    function popupRow(label, value) {
+        // Matches pickFirst's notion of "absent": a numeric 0 is a real
+        // altitude floor, not an empty row.
+        if (value === "" || value === undefined || value === null) return "";
+        var body = label ? "<b>" + label + ":</b> " + htmlEscape(value) : htmlEscape(value);
+        return "<br><small>" + body + "</small>";
     }
 
     function formatAlt(value, unit, codeword) {
@@ -131,7 +133,7 @@
         if (/[A-Za-z]/.test(v)) return v;
         var parts = [v];
         if (unit) parts.push(String(unit));
-        if (codeword) parts.push(String(codeword));  // e.g. MSL, AGL
+        if (code) parts.push(code);  // e.g. MSL, AGL
         return parts.join(" ");
     }
 
@@ -149,8 +151,7 @@
         // This FAA boilerplate describes where the legal schedule is defined;
         // it is not itself an operating-hours value.
         if (/legal description references notam/i.test(remark)) remark = "";
-        if (code && remark) return code + " — " + remark;
-        return remark || code;
+        return [code, remark].filter(Boolean).join(" — ");
     }
 
     function buildAirspacePopup(layer, props) {
@@ -158,7 +159,7 @@
         var name = pickFirst(p, [
             "NAME", "name", "Name",
             "LOCAL_TYPE", "TYPE_CODE",
-            "notam_id", "NOTAM_ID"
+            "notam_id"
         ]) || layer.toUpperCase();
 
         var ceilVal = pickFirst(p, [
@@ -180,54 +181,52 @@
         var ceil = formatAlt(ceilVal, ceilUnit, ceilCode);
         var floor = formatAlt(floorVal, floorUnit, floorCode);
 
-        var html = "<b>" + escapeHtml(name) + "</b>";
+        var html = "<b>" + htmlEscape(name) + "</b>";
         if (floor || ceil) {
-            html += "<br>" + escapeHtml(floor || "SFC") + " &mdash; " + escapeHtml(ceil || "?");
+            html += "<br>" + htmlEscape(floor || "SFC") + " &mdash; " + htmlEscape(ceil || "?");
         }
 
-        var airspaceClass = pickFirst(p, ["CLASS", "LOCAL_TYPE", "TYPE_CODE"]);
-        var sector = pickFirst(p, ["SECTOR", "sector"]);
-        var schedule = formatSchedule(p);
-        var agency = pickFirst(p, ["CONT_AGENT", "COMM_NAME"]);
-        if (airspaceClass) html += "<br><small><b>Class/type:</b> " + escapeHtml(airspaceClass) + "</small>";
-        if (sector) html += "<br><small><b>Sector:</b> " + escapeHtml(sector) + "</small>";
-        if (schedule) html += "<br><small><b>Schedule:</b> " + escapeHtml(schedule) + "</small>";
-        if (agency) html += "<br><small><b>Controlling agency:</b> " + escapeHtml(agency) + "</small>";
+        html += popupRow("Class/type", pickFirst(p, ["CLASS", "LOCAL_TYPE", "TYPE_CODE"]));
+        html += popupRow("Sector", pickFirst(p, ["SECTOR", "sector"]));
+        html += popupRow("Schedule", formatSchedule(p));
+        html += popupRow("Controlling agency", pickFirst(p, ["CONT_AGENT", "COMM_NAME"]));
 
         if (layer === "tfr") {
-            var stateName = pickFirst(p, ["STATE", "state"]);
-            if (stateName) html += "<br><small><b>State:</b> " + escapeHtml(stateName) + "</small>";
+            html += popupRow("State", pickFirst(p, ["STATE", "state"]));
         }
 
-        // TFR-specific extras: NOTAM number, type, description, expiration.
-        var notam = pickFirst(p, [
-            "notam_id", "NOTAM_ID", "notamId",
-            "notam_number", "NOTAM_NUMBER", "notamNumber",
-            "NOTAM", "notam", "NOTAM_KEY"
-        ]);
-        if (notam) html += "<br><small><b>NOTAM:</b> " + escapeHtml(notam) + "</small>";
+        // TFR-specific extras. airspace_cache normalizes the WFS schema into
+        // these lowercase names, so no vendor spellings are probed here — and
+        // there is no expiry row because the feed carries no expiry field.
+        html += popupRow("NOTAM", p.notam_id);
+        html += popupRow("", p.type);
 
-        var tfrType = pickFirst(p, ["type", "TYPE", "tfr_type", "LEGAL"]);
-        if (tfrType) html += "<br><small>" + escapeHtml(tfrType) + "</small>";
-        var tfrDesc = pickFirst(p, ["description", "DESCRIPTION", "remarks", "TITLE"]);
-        if (tfrDesc) {
-            var trimmed = String(tfrDesc);
-            if (trimmed.length > 200) trimmed = trimmed.slice(0, 200) + "…";
-            html += "<br><small>" + escapeHtml(trimmed) + "</small>";
-        }
-        var tfrExp = pickFirst(p, ["expires_dt", "EXPIRES", "expiration"]);
-        if (tfrExp) html += "<br><small>Expires: " + escapeHtml(tfrExp) + "</small>";
-        var tfrModified = pickFirst(p, ["last_modified", "LAST_MODIFICATION_DATETIME"]);
-        if (tfrModified) html += "<br><small>Last modified: " + escapeHtml(tfrModified) + "</small>";
+        var tfrDesc = String(p.description || "");
+        if (tfrDesc.length > 200) tfrDesc = tfrDesc.slice(0, 200) + "…";
+        html += popupRow("", tfrDesc);
+
+        html += popupRow("Last modified", p.last_modified);
 
         return html;
     }
 
+    // Pane name and checkbox id are both mechanical transforms of the layer
+    // key; keeping them adjacent is what stops the two from drifting.
+    function airspacePaneName(layer) {
+        return "airspace-" + layer.replace("_", "-");
+    }
+
+    function airspaceToggleId(layer) {
+        return "toggle-" + layer.replace("_", "-");
+    }
+
+    // Separate SVG panes keep transparent polygons clickable without a
+    // full-map Canvas renderer swallowing clicks intended for lower layers.
     function ensureAirspacePanes() {
-        Object.keys(AIRSPACE_PANES).forEach(function (layer) {
-            var config = AIRSPACE_PANES[layer];
-            var pane = state.map.getPane(config.name) || state.map.createPane(config.name);
-            pane.style.zIndex = String(config.zIndex);
+        AIRSPACE_LAYERS.forEach(function (layer, i) {
+            var name = airspacePaneName(layer);
+            var pane = state.map.getPane(name) || state.map.createPane(name);
+            pane.style.zIndex = String(AIRSPACE_PANE_BASE_Z + i * 10);
         });
     }
 
@@ -238,12 +237,11 @@
         }
         fetchAirspace(layer).then(function (data) {
             if (!data) return;
-            if (!$("toggle-" + layer.replace("_", "-")).checked) return;
+            if (!$(airspaceToggleId(layer)).checked) return;
             if (!$("toggle-airspace").checked) return;
             var leafletLayer = L.geoJSON(data, {
-                pane: AIRSPACE_PANES[layer].name,
+                pane: airspacePaneName(layer),
                 style: AIRSPACE_STYLE[layer],
-                interactive: true,
                 onEachFeature: function (feature, lyr) {
                     lyr.bindPopup(buildAirspacePopup(layer, feature.properties));
                 }
@@ -251,6 +249,12 @@
             state.airspaceLayers[layer] = leafletLayer;
             leafletLayer.addTo(state.map);
             setStatus("airspace-status", "Loaded " + (data.features || []).length + " " + layer + " features");
+        }).catch(function (e) {
+            // fetchAirspace absorbs network errors, so anything reaching here
+            // came from rendering — a malformed cached geometry, or a missing
+            // htmlEscape if overlays.js failed to load. Without this the
+            // toggle stays checked with nothing drawn and no explanation.
+            setStatus("airspace-status", "Failed to draw " + layer + ": " + e.message, true);
         });
     }
 
@@ -263,8 +267,7 @@
     function syncAirspace() {
         var masterOn = $("toggle-airspace").checked;
         AIRSPACE_LAYERS.forEach(function (layer) {
-            var subId = "toggle-" + layer.replace("_", "-");
-            var sub = $(subId);
+            var sub = $(airspaceToggleId(layer));
             if (masterOn && sub && sub.checked) {
                 showAirspaceLayer(layer);
             } else {
@@ -292,8 +295,13 @@
                     return;
                 }
                 // Clear cached payloads + drawn layers so syncAirspace re-fetches the new data.
+                // The generation bump retires any GET still in flight for the
+                // old cache; clearing airspaceFetching lets syncAirspace start
+                // a fresh one instead of short-circuiting on the stale flag.
+                state.airspaceGeneration++;
                 AIRSPACE_LAYERS.forEach(function (layer) {
                     delete state.airspaceData[layer];
+                    delete state.airspaceFetching[layer];
                     if (state.airspaceLayers[layer]) {
                         state.map.removeLayer(state.airspaceLayers[layer]);
                         delete state.airspaceLayers[layer];
@@ -382,10 +390,13 @@
                         var owner = p.OWNNAME1 || "(no owner)";
                         var addr = p.PREMISEADD || "";
                         var acct = p.ACCTID || "";
+                        // Owner, address, and account id are third-party
+                        // strings from the Maryland parcel service, rendered
+                        // into a page holding the RECOVERY_API_KEY session.
                         var html =
-                            "<b>" + owner + "</b><br>" +
-                            (addr ? addr + "<br>" : "") +
-                            (acct ? "<small>Acct: " + acct + "</small><br>" : "") +
+                            "<b>" + htmlEscape(owner) + "</b><br>" +
+                            (addr ? htmlEscape(addr) + "<br>" : "") +
+                            (acct ? "<small>Acct: " + htmlEscape(acct) + "</small><br>" : "") +
                             mapsLinksHtml(0, 0, addr || (state.landing && (state.landing[0] + "," + state.landing[1])));
                         lyr.bindPopup(html);
                     }
@@ -408,7 +419,7 @@
     function wireToggles() {
         $("toggle-airspace").addEventListener("change", syncAirspace);
         AIRSPACE_LAYERS.forEach(function (layer) {
-            var el = $("toggle-" + layer.replace("_", "-"));
+            var el = $(airspaceToggleId(layer));
             if (el) el.addEventListener("change", syncAirspace);
         });
         var refreshBtn = $("airspace-refresh-btn");

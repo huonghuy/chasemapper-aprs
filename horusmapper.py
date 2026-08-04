@@ -5,6 +5,7 @@
 #   Copyright (C) 2018  Mark Jessop <vk5qi@rfhead.net>
 #   Released under GNU GPL v3 or later
 #
+import functools
 import sys
 
 # Version check.
@@ -239,38 +240,48 @@ def flask_server_kml_overlay(overlay_id):
 RECOVERY_API_KEY = os.environ.get("RECOVERY_API_KEY", "")
 
 
-def _check_recovery_auth():
-    if not RECOVERY_API_KEY:
-        return None
-    _supplied = flask.request.headers.get("X-Recovery-Key", "")
-    if not hmac.compare_digest(_supplied, RECOVERY_API_KEY):
-        return flask.jsonify({"error": "forbidden"}), 403
-    return None
+def require_recovery_auth(view):
+    """Gate a route behind X-Recovery-Key. A decorator rather than an in-body
+    check so a new route cannot ship unauthenticated by forgetting the guard."""
+    @functools.wraps(view)
+    def wrapper(*args, **kwargs):
+        if RECOVERY_API_KEY:
+            supplied = flask.request.headers.get("X-Recovery-Key", "")
+            if not hmac.compare_digest(supplied, RECOVERY_API_KEY):
+                return flask.jsonify({"error": "forbidden"}), 403
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def require_known_profile(view):
+    """404 unless the route's profile_id names a configured telemetry profile."""
+    @functools.wraps(view)
+    def wrapper(profile_id, *args, **kwargs):
+        if profile_id not in chasemapper_config.get("profiles", {}):
+            return flask.jsonify({"error": "unknown profile"}), 404
+        return view(profile_id, *args, **kwargs)
+
+    return wrapper
 
 
 @app.route("/airspace/status")
+@require_recovery_auth
 def flask_airspace_status():
-    auth = _check_recovery_auth()
-    if auth is not None:
-        return auth
     return flask.jsonify(airspace_cache.get_status())
 
 
 @app.route("/airspace/refresh", methods=["POST"])
+@require_recovery_auth
 def flask_airspace_refresh():
-    auth = _check_recovery_auth()
-    if auth is not None:
-        return auth
     result = airspace_cache.force_refresh_all()
     return flask.jsonify(result)
 
 
 @app.route("/airspace/<layer>")
+@require_recovery_auth
 def flask_airspace_layer(layer):
-    auth = _check_recovery_auth()
-    if auth is not None:
-        return auth
-    data, _meta = airspace_cache.get_layer_geojson(layer)
+    data = airspace_cache.get_layer_geojson(layer)
     if data is None:
         return flask.jsonify({"error": "unknown or uncached layer", "layer": layer}), 404
     response = flask.jsonify(data)
@@ -280,10 +291,8 @@ def flask_airspace_layer(layer):
 
 
 @app.route("/parcels")
+@require_recovery_auth
 def flask_parcels():
-    auth = _check_recovery_auth()
-    if auth is not None:
-        return auth
     try:
         lat = float(flask.request.args.get("lat"))
         lon = float(flask.request.args.get("lon"))
@@ -292,25 +301,21 @@ def flask_parcels():
             raise ValueError("non-finite value")
     except (TypeError, ValueError):
         return flask.jsonify({"error": "lat, lon, radius are required numeric query params"}), 400
-    if radius > 1.0:
-        return flask.jsonify({"error": "radius capped at 1.0 mi"}), 400
+    if radius > parcel_proxy.RADIUS_MAX_MI:
+        return flask.jsonify({
+            "error": "radius capped at %s mi" % parcel_proxy.RADIUS_MAX_MI
+        }), 400
     return flask.jsonify(parcel_proxy.get_parcels_near(lat, lon, radius))
 
 
-# ---- Per-profile geofence (choppies KML upload + on-map drawing) ------
-#
-# Each telemetry profile can have one geofence: a polygon plus min/max
-# altitude and a remain inside/outside flag. The operator can either
-# upload a HAB Bounder KML or draw the polygon directly on the Leaflet
-# map; both paths land here and produce the same record.
-#
-# Storage is a sidecar JSON file (geofences.json) under {profiles, trash}.
-# A DELETE or an overwrite moves the previous geofence into `trash` so
-# accidental clears are recoverable; trash entries are auto-pruned
-# after 2 days on the next save (see geofence.py:TRASH_TTL_SECONDS).
-#
-# Every mutation broadcasts a `geofence_update` SocketIO event so all
-# connected clients refresh immediately.
+# Per-profile geofence routes (KML upload + on-map drawing).
+# See geofence.py for the storage, trash, and TTL semantics.
+
+
+def _persist_geofence():
+    """Write the store to disk and re-attach it to the live config."""
+    geofence_mod.save_store(geofence_store_path, geofence_store)
+    geofence_mod.attach_to_profiles(chasemapper_config, geofence_store)
 
 
 def _broadcast_geofence(profile_id):
@@ -327,12 +332,9 @@ def _broadcast_geofence(profile_id):
 
 
 @app.route("/geofence/<profile_id>", methods=["GET"])
+@require_recovery_auth
+@require_known_profile
 def flask_get_geofence(profile_id):
-    auth = _check_recovery_auth()
-    if auth is not None:
-        return auth
-    if profile_id not in chasemapper_config.get("profiles", {}):
-        return flask.jsonify({"error": "unknown profile"}), 404
     return flask.jsonify({
         "geofence": geofence_store.get("profiles", {}).get(profile_id),
         "has_trash": geofence_mod.has_trash(geofence_store, profile_id),
@@ -340,6 +342,8 @@ def flask_get_geofence(profile_id):
 
 
 @app.route("/geofence/<profile_id>", methods=["POST"])
+@require_recovery_auth
+@require_known_profile
 def flask_upload_geofence(profile_id):
     """Upload a geofence for the given profile.
 
@@ -354,13 +358,6 @@ def flask_upload_geofence(profile_id):
     trash, so the user can hit Restore to undo the change.
     """
     global geofence_store
-
-    auth = _check_recovery_auth()
-    if auth is not None:
-        return auth
-
-    if profile_id not in chasemapper_config.get("profiles", {}):
-        return flask.jsonify({"error": "unknown profile"}), 404
 
     # Decide which body shape we got. JSON when explicitly typed as
     # such, or when there's no multipart KML and the body looks like
@@ -398,8 +395,7 @@ def flask_upload_geofence(profile_id):
             return flask.jsonify({"error": "KML could not be parsed as a valid geofence."}), 400
 
     geofence_mod.set_profile_geofence(geofence_store, profile_id, geofence)
-    geofence_mod.save_store(geofence_store_path, geofence_store)
-    geofence_mod.attach_to_profiles(chasemapper_config, geofence_store)
+    _persist_geofence()
     _broadcast_geofence(profile_id)
     logging.info(
         "Geofence set for profile '%s' (%d vertices, remain %s, alt %s..%s m, src=%s)"
@@ -420,20 +416,14 @@ def flask_upload_geofence(profile_id):
 
 
 @app.route("/geofence/<profile_id>", methods=["DELETE"])
+@require_recovery_auth
+@require_known_profile
 def flask_clear_geofence(profile_id):
     global geofence_store
 
-    auth = _check_recovery_auth()
-    if auth is not None:
-        return auth
-
-    if profile_id not in chasemapper_config.get("profiles", {}):
-        return flask.jsonify({"error": "unknown profile"}), 404
-
     cleared = geofence_mod.clear_profile_geofence(geofence_store, profile_id)
     if cleared:
-        geofence_mod.save_store(geofence_store_path, geofence_store)
-        geofence_mod.attach_to_profiles(chasemapper_config, geofence_store)
+        _persist_geofence()
         logging.info("Geofence cleared (soft-deleted) for profile '%s'" % profile_id)
 
     _broadcast_geofence(profile_id)
@@ -444,25 +434,19 @@ def flask_clear_geofence(profile_id):
 
 
 @app.route("/geofence/<profile_id>/restore", methods=["POST"])
+@require_recovery_auth
+@require_known_profile
 def flask_restore_geofence(profile_id):
     """Reinstate the most recently cleared/overwritten geofence for a
     profile. The currently-active geofence (if any) is itself moved to
     trash, so the restore is undoable."""
     global geofence_store
 
-    auth = _check_recovery_auth()
-    if auth is not None:
-        return auth
-
-    if profile_id not in chasemapper_config.get("profiles", {}):
-        return flask.jsonify({"error": "unknown profile"}), 404
-
     restored = geofence_mod.restore_latest(geofence_store, profile_id)
     if not restored:
         return flask.jsonify({"error": "no recoverable geofence in trash."}), 404
 
-    geofence_mod.save_store(geofence_store_path, geofence_store)
-    geofence_mod.attach_to_profiles(chasemapper_config, geofence_store)
+    _persist_geofence()
     _broadcast_geofence(profile_id)
     logging.info(
         "Geofence restored for profile '%s' (%d vertices)"
@@ -834,6 +818,31 @@ def _lock_launch_preview_for_live_prediction(callsign):
     flask_emit_event("aprsis_state", _aprsis_state())
 
 
+# Float-profile rules, shared by the scheduled predictor and the one-shot
+# launch preview so the two can't drift apart.
+
+
+def _float_config():
+    """(enabled, altitude, duration_hours) for CUSF float_profile / GHOUL flights."""
+    return (
+        bool(chasemapper_config.get("float_enabled", False)),
+        float(chasemapper_config.get("float_altitude", 25000.0)),
+        float(chasemapper_config.get("float_duration_hours", 24.0)),
+    )
+
+
+def _float_ceiling(float_altitude, current_altitude):
+    """Tawhiri rejects a float altitude at or below the launch altitude."""
+    return max(float_altitude, current_altitude + 1.0)
+
+
+def _offline_float_burst(float_altitude, current_altitude):
+    """The offline cusf_predictor has no float profile, so the float ceiling
+    becomes a soft burst: the path ascends to it and then descends. Wrong
+    after the float point, but it at least shows the ceiling."""
+    return max(float_altitude, current_altitude + 100.0)
+
+
 def _calculate_launch_preview(car_state, ascent_rate):
     """Run one prediction without adding a synthetic payload track."""
     launch_time = datetime.now(UTC)
@@ -842,13 +851,11 @@ def _calculate_launch_preview(car_state, ascent_rate):
         float(chasemapper_config["pred_burst"]), launch_altitude + 100.0
     )
     descent_rate = float(chasemapper_config["pred_desc_rate"])
-    float_enabled = bool(chasemapper_config.get("float_enabled", False))
-    float_altitude = float(chasemapper_config.get("float_altitude", 25000.0))
-    float_duration = float(chasemapper_config.get("float_duration_hours", 24.0))
+    float_enabled, float_altitude, float_duration = _float_config()
 
     if predictor == "Tawhiri":
         if float_enabled:
-            effective_float_altitude = max(float_altitude, launch_altitude + 1.0)
+            effective_float_altitude = _float_ceiling(float_altitude, launch_altitude)
             prediction = get_tawhiri_prediction(
                 launch_datetime=launch_time,
                 launch_latitude=car_state["lat"],
@@ -872,7 +879,7 @@ def _calculate_launch_preview(car_state, ascent_rate):
         prediction_path = prediction["path"] if prediction else []
     else:
         offline_burst = (
-            max(float_altitude, launch_altitude + 100.0)
+            _offline_float_burst(float_altitude, launch_altitude)
             if float_enabled
             else burst_altitude
         )
@@ -1103,15 +1110,10 @@ def run_prediction():
         else:
             _burst_alt = chasemapper_config["pred_burst"]
 
-        # Global float toggle (CUSF float_profile / GHOUL missions).
-        # Applies to whichever telemetry profile is active — flip on to
-        # treat the current flight as a float; flip off to revert to
-        # standard burst/descent. Only applied while ascending; once the
-        # payload starts descending we revert to standard descent
-        # prediction so the landing point is still computed correctly.
-        _float_enabled = bool(chasemapper_config.get("float_enabled", False))
-        _float_altitude = float(chasemapper_config.get("float_altitude", 25000.0))
-        _float_duration = float(chasemapper_config.get("float_duration_hours", 24.0))
+        # Float (CUSF float_profile / GHOUL) applies only while ascending —
+        # once the payload is coming down we revert to standard descent so
+        # the landing point is still computed correctly.
+        _float_enabled, _float_altitude, _float_duration = _float_config()
         _use_float = _float_enabled and not _current_pos["is_descending"]
 
         if predictor == "Tawhiri":
@@ -1125,11 +1127,7 @@ def run_prediction():
                 _current_pos["ascent_rate"] = 0.1
 
             if _use_float:
-                # Float profile: ensure float altitude is above current
-                # altitude (Tawhiri rejects otherwise).
-                _eff_float_alt = _float_altitude
-                if _eff_float_alt <= _current_pos["alt"]:
-                    _eff_float_alt = _current_pos["alt"] + 1
+                _eff_float_alt = _float_ceiling(_float_altitude, _current_pos["alt"])
                 _stop_dt = _current_pos["time"] + timedelta(hours=_float_duration)
                 logging.info(
                     "Float-profile prediction: float_alt=%.0f m, drift until %s"
@@ -1169,17 +1167,14 @@ def run_prediction():
 
         else:
             logging.info("Running Offline Predictor for %s." % _payload)
-            # Offline cusf_predictor has no native float profile. Best we
-            # can do is treat the float altitude as a soft burst — the
-            # path will show ascent-to-float-then-descend, which is
-            # wrong post-burst but at least flags the float ceiling
-            # visually. Tawhiri is the right backend for float flights.
             if _use_float:
                 logging.warning(
                     "Float mode enabled but offline predictor doesn't support "
                     "float_profile; falling back to burst at float altitude."
                 )
-                _offline_burst = max(_float_altitude, _current_pos["alt"] + 100)
+                _offline_burst = _offline_float_burst(
+                    _float_altitude, _current_pos["alt"]
+                )
             else:
                 _offline_burst = _burst_alt
             _pred_path = predictor.predict(

@@ -1,0 +1,12 @@
+# Test-only dependencies.
+#
+# Deliberately not `-r requirements.txt`: the runtime set pulls in eccodes,
+# cfgrib/xarray and a git checkout of cusfpredict, which need system libraries
+# and several minutes to build. The unit tests only touch the self-contained
+# chasemapper modules, so this lists what those import and nothing else.
+pytest
+
+requests        # airspace_cache, parcel_proxy, spot
+defusedxml      # geofence, spot
+shapely         # parcel_proxy
+aprslib         # aprsis

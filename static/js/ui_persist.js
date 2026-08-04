@@ -52,8 +52,6 @@
         save(current);
     }
 
-    // ---- Public API -----------------------------------------------------
-
     function restoreCheckbox(id, key, onChangeExtra) {
         var el = document.getElementById(id);
         if (!el) return;

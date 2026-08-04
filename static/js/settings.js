@@ -161,24 +161,13 @@ function serverSettingsUpdate(data){
     timeSeqTimes = chase_config.time_seq_times;
     $('#timeSeqActiveTime').val(timeSeqActive.toFixed(0));
     $('#timeSeqCycleTime').val(timeSeqCycle.toFixed(0));
-    $('#timeSeqActiveTime').val(timeSeqActive.toFixed(0));
-    $('#timeSeqCycleTime').val(timeSeqCycle.toFixed(0));
     updateTimeSeqStatus();
     if (timeSeqEnabled == true || timeSeqTimes.some(function (t) { return t > 0; })){
         refreshServerTime();
     }
-    if (timeSeqEnabled == true || timeSeqTimes.some(function (t) { return t > 0; })){
-        refreshServerTime();
-    }
 
-
-    // Clear and populate the profile selection.
-    // (Was previously '.children("option:not(:first)").remove()', which
-    // assumed a static placeholder <option> existed as :first. Our
-    // <select> is empty in the HTML, so that left the first profile
-    // intact across re-renders and duplicated it on every server
-    // settings update — visible as repeating "BPP Command" entries
-    // after switching profiles a few times.)
+    // empty(), not '.children("option:not(:first)").remove()' — the <select>
+    // has no placeholder option, so :first is a real profile.
     $('#profileSelect').empty();
 
     $.each(chase_config.profiles, function(key, value) {
