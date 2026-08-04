@@ -255,11 +255,20 @@ def parse_config_file(filename):
         logging.info("Missing turn rate gate setting, using default (4m/s)")
         chase_config["turn_rate_threshold"] = 4.0
 
+    # Fractional values are supported - GenericTrack weights the oldest sample by
+    # the remainder. Below 2 there aren't enough positions to derive a rate.
     try:
-        chase_config["ascent_rate_averaging"] = config.getint("predictor", "ascent_rate_averaging")
+        chase_config["ascent_rate_averaging"] = config.getfloat("predictor", "ascent_rate_averaging")
+        if chase_config["ascent_rate_averaging"] < 2.0:
+            logging.warning(
+                "ascent_rate_averaging must be at least 2, using default (10)"
+            )
+            chase_config["ascent_rate_averaging"] = 10.0
     except:
-        logging.info("Missing ascent_rate_averaging setting, using default (10)")
-        chase_config["ascent_rate_averaging"] = 10
+        logging.info(
+            "Missing or unparseable ascent_rate_averaging setting, using default (10)"
+        )
+        chase_config["ascent_rate_averaging"] = 10.0
 
     try:
         chase_config["bearings_only_mode"] = config.getboolean("bearings", "bearings_only_mode")

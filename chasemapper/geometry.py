@@ -135,36 +135,48 @@ class GenericTrack(object):
                 return _altitude_delta / _time_delta
 
         else:
-            _num_samples = min(len(self.track_history), self.ASCENT_AVERAGING)
+            # ASCENT_AVERAGING may be fractional, so take the whole samples at full
+            # weight and give the oldest, partial sample the leftover fraction.
+            # e.g. 5.5 samples = 4 rates at full weight plus a 5th at half weight.
+            _num_samples = min(float(self.ASCENT_AVERAGING), len(self.track_history))
+            _num_rates = _num_samples - 1.0
+            _whole_rates = int(_num_rates)
+            _frac_weight = _num_rates - _whole_rates
+
             _asc_rates = []
+            _weights = []
 
-            for _i in range(-1 * (_num_samples - 1), 0):
-                _time_delta = (
-                    self.track_history[_i][0] - self.track_history[_i - 1][0]
-                ).total_seconds()
-                _altitude_delta = (
-                    self.track_history[_i][3] - self.track_history[_i - 1][3]
-                )
-                try:
-                    _asc_rates.append(_altitude_delta / _time_delta)
-                except ZeroDivisionError:
-                    logging.warning(
-                        "Zero time-step encountered in ascent rate calculation - are multiple receivers reporting telemetry simultaneously?"
-                    )
-                    continue
-            
-            # _mean2_time_delta = (
-            #         self.track_history[-1][0] - self.track_history[-1*_num_samples][0]
-            #     ).total_seconds()
-            
-            # _mean2_altitude_delta = (
-            #         self.track_history[-1][3] - self.track_history[-1*_num_samples][3]
-            #     )
-            
-            # _asc_rate2 = _mean2_altitude_delta / _mean2_time_delta
+            for _n in range(1, _whole_rates + 1):
+                _rate = self.ascent_rate_sample(-_n)
+                if _rate is not None:
+                    _asc_rates.append(_rate)
+                    _weights.append(1.0)
 
-            #print(f"asc_rates: {_asc_rates}, Mean: {np.mean(_asc_rates)}")
-            return np.mean(_asc_rates)
+            if _frac_weight > 0.0 and (_whole_rates + 1) < len(self.track_history):
+                _rate = self.ascent_rate_sample(-(_whole_rates + 1))
+                if _rate is not None:
+                    _asc_rates.append(_rate)
+                    _weights.append(_frac_weight)
+
+            if len(_asc_rates) == 0:
+                return 0.0
+
+            return float(np.average(_asc_rates, weights=_weights))
+
+    def ascent_rate_sample(self, _i):
+        """ Ascent rate between track_history[_i-1] and track_history[_i], or None on a zero time-step. """
+        _time_delta = (
+            self.track_history[_i][0] - self.track_history[_i - 1][0]
+        ).total_seconds()
+        _altitude_delta = self.track_history[_i][3] - self.track_history[_i - 1][3]
+
+        if _time_delta == 0:
+            logging.warning(
+                "Zero time-step encountered in ascent rate calculation - are multiple receivers reporting telemetry simultaneously?"
+            )
+            return None
+
+        return _altitude_delta / _time_delta
 
     def calculate_heading(self):
         """ Calculate the heading of the payload """

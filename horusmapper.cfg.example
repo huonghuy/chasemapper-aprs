@@ -12,7 +12,7 @@
 #
 [profile_selection]
 # How many profiles have been defined
-profile_count = 3
+profile_count = 2
 # Index of the default profile (indexing from 1)
 default_profile = 1
 
@@ -20,11 +20,11 @@ default_profile = 1
 [profile_1]
 # An example configuration which displays telemetry from auto_rx, and obtains chase car positions from GPSD.
 # Profile name - will be shown in the web client.
-profile_name = BPP Command
+profile_name = UB Primary
 # Telemetry source type:
 #  ozimux - Read data in OziMux format (TELEMETRY,HH:MM:SS,lat,lon,alt\n)
 #  horus_udp - Read Horus UDP Broadcast 'Payload Summary' messages, as emitted by auto_rx and the horus-gui software.
-telemetry_source_type = horus_udp
+telemetry_source_type = ozimux
 # Telemetry source port (UDP)  (auto_rx defauts to 55673)
 telemetry_source_port = 55673
 
@@ -49,7 +49,8 @@ car_source_port = 55672
 # sondehubamateur = SondeHub Amateur Database, for viewing on the SondeHub-Amateur Tracker (https://amateur.sondehub.org)
 # Use this when chasing your own flights, and you want to show up on the sondehub-amateur tracker.
 #
-online_tracker = sondehub
+# Own flight (KC3SKW-*), so the amateur tracker rather than the radiosonde one.
+online_tracker = sondehubamateur
 
 # Per-profile APRS-IS callsigns. Only used if car_source_type = aprsis.
 aprsis_balloon_callsigns = KC3SKW-8, KC3SKW-9
@@ -58,48 +59,19 @@ aprsis_active_car_callsign = KC1RBW-2
 
 # Other profiles can be defined in sections like the following:
 [profile_2]
-profile_name = BPP HAPL
+profile_name = UB Secondary
 telemetry_source_type = horus_udp
 telemetry_source_port = 55672
 
 # Car Position Source
 car_source_type = aprsis
 car_source_port = 55672
-
-# Online Tracker System
-# Where to upload chase-car positions and balloon recovery notifications to.
-# sondehub = Sondehub v2 Database, for viewing on the SondeHub tracker (https://tracker.sondehub.org)
-# sondehubamateur = SondeHub Amateur Database, for viewing on the SondeHub-Amateur Tracker (https://amateur.sondehub.org)
 online_tracker = sondehubamateur
 
 # Per-profile APRS-IS callsigns.
 aprsis_balloon_callsigns = W3EAX-11, W3EAX-12
 aprsis_car_callsigns = KC1RBW-2, KC1YRV-2
 aprsis_active_car_callsign = KC1RBW-2
-
-
-[profile_3]
-profile_name = BPP BITS
-telemetry_source_type = horus_udp
-telemetry_source_port = 55672
-
-# Car Position Source
-car_source_type = aprsis
-car_source_port = 55672
-
-# Online Tracker System
-# Where to upload chase-car positions and balloon recovery notifications to.
-# sondehub = Sondehub v2 Database, for viewing on the SondeHub tracker (https://tracker.sondehub.org)
-# sondehubamateur = SondeHub Amateur Database, for viewing on the SondeHub-Amateur Tracker (https://amateur.sondehub.org)
-online_tracker = sondehubamateur
-
-# Per-profile APRS-IS callsigns.
-aprsis_balloon_callsigns = KC3SKW-10
-aprsis_car_callsigns = KC1RBW-2, KC1YRV-2
-aprsis_active_car_callsign = KC1RBW-2
-
-# [profile_4]
-
 
 [gpsd]
 # GPSD Host/Port - Only used if selected in a telemetry profile above.
@@ -144,7 +116,7 @@ spot_poll_interval = 300
 # Set the env vars in the process environment (shell export,
 # systemd EnvironmentFile=, or docker run -e), same pattern as
 # RECOVERY_API_KEY. Leaving an env var unset skips that tracker with a warning.
-spot_feeds = SPOT-command:SPOT_FEED_COMMAND, SPOT-hapl:SPOT_FEED_HAPL
+spot_feeds = SPOT-primary:SPOT_FEED_PRIMARY, SPOT-secondary:SPOT_FEED_SECONDARY
 
 
 # Map Settings
@@ -156,10 +128,13 @@ flask_port = 5001
 # Default Map Centre & Stationary Position
 # If the profile's car_source_type is set to station, the following position will be indicated on the map as a stationary receiver.
 
-#Currently at: University of Maryland Manufacturing Building
-default_lat = 38.99283
-default_lon = -76.93944
-default_alt = 50.0 #in meters
+# Currently at: Sordillos, Spain (42.46139 N, 4.10713 W)
+default_lat = 42.46139
+default_lon = -4.10713
+# Altitude in metres.
+# NOTE: inline '#' comments are NOT supported on value lines - they become part
+# of the value, which then fails to parse and is silently replaced by a default.
+default_alt = 820.0
 
 # How long to keep payload data (minutes). 1440 = 24h, so a chase day's
 # telemetry trail survives page refreshes (as long as the daemon stays up).
@@ -200,6 +175,9 @@ float_duration_hours = 2.0
 # Note that this is data points, not *seconds*, so you may need to tune this for your payload's
 # position update rate.
 # Longer averaging means a smoother ascent rate. ~10 seems ok for a typical Horus Binary payload.
+# Fractional values are allowed - the oldest sample is weighted by the remainder,
+# so 5.5 averages the 4 newest rates at full weight and the 5th at half weight.
+# Minimum is 2 (you need two positions to get one rate).
 ascent_rate_averaging = 5.5
 
 # Offline Predictions
@@ -226,8 +204,7 @@ gfs_directory = ./gfs/
 # Example:
 # model_download = python3 -m cusfpredict.gfs --lat=-33 --lon=139 --latdelta=10 --londelta=10 -f 24 -m 0p50 -o gfs
 # The gfs directory (above) will be cleared of all data files once the new model is downloaded.
-model_download = python3 -m cusfpredict.gfs --lat=39.4 --lon=-79.2 --latdelta=5 --londelta=6 -f 24 -m 0p25_1hr -o ./gfs
-
+model_download = python3 -m cusfpredict.gfs --lat=42.4 --lon=-4.1 --latdelta=5 --londelta=8 -f 24 -m 0p25_1hr -o ./gfs
 
 #
 #	Offline Tile Server
@@ -239,7 +216,7 @@ model_download = python3 -m cusfpredict.gfs --lat=39.4 --lon=-79.2 --latdelta=5 
 #
 [offline_maps]
 # Enable serving up maps from a directory of map tiles.
-tile_server_enabled = True
+tile_server_enabled = False
 
 # Path to map tiles. For FoxtrotGPS, this is usually ~/Maps/
 # NOTE: This must be an ABSOLUTE directory, i.e. /home/pi/Maps/ , using ~/Maps/ will not work.
@@ -258,7 +235,8 @@ tile_server_path = /home/pi/Maps/
 # 
 # Note - Variables in this section still refer to habitat to avoid breaking existing configurations.
 
-[habitat] #Not needed since it runs on stationary server at home
+# Not needed since it runs on a stationary server at home.
+[habitat]
 # Enable uploading of chase-car position to SondeHub / SondeHub-Amateur (True / False)
 # Which tracker positions are uploaded to depends on the online_tracker setting of the selected
 # profile (further up in this config file).
@@ -374,14 +352,22 @@ reload_last_position = True
 #   Files are served only if listed here. Use absolute paths.
 #   Placemarks, paths, and polygons are supported via leaflet-omnivore.
 #
-overlay_count = 0
+overlay_count = 2
+
+# Path of totality for the 2026 Aug 12 eclipse. Regenerate with:
+#   python3 utils/eclipse_path_kml.py --output-dir overlays/
+# Source data is the NASA/GSFC path table (Fred Espenak), WGS 84, 120 s sampling.
+overlay_1_name = Eclipse Path (Iberia)
+overlay_1_path = /Users/huyhuong/Git-Repos/chasemapper/overlays/eclipse_2026_path_iberia.kml
+overlay_1_visible = True
+
+# The complete path from the Arctic down to the Mediterranean. Off by default -
+# it crosses the north pole, which Web Mercator cannot draw sensibly.
+overlay_2_name = Eclipse Path (Full)
+overlay_2_path = /Users/huyhuong/Git-Repos/chasemapper/overlays/eclipse_2026_path_full.kml
+overlay_2_visible = False
 
 # Example:
-#overlay_count = 2
 #overlay_1_name = Hunt Area
 #overlay_1_path = /home/pi/chasemapper/overlays/hunt_area.kml
 #overlay_1_visible = True
-#
-#overlay_2_name = Exclusion Zones
-#overlay_2_path = /home/pi/chasemapper/overlays/exclusion_zones.kml
-#overlay_2_visible = False
