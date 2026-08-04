@@ -195,15 +195,15 @@ class FetchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             airspace_cache._fetch_airspace("ctr")
 
-    def test_every_layer_has_a_type_mapping_and_cache_path(self):
+    def test_every_layer_has_a_cache_path(self):
+        # Layer types are the source of LAYERS, so only the paths can drift.
         for layer in airspace_cache.LAYERS:
-            self.assertIn(layer, airspace_cache._LAYER_TYPES)
             self.assertIn(layer, airspace_cache._LAYER_PATHS)
 
     def test_unknown_layer_is_rejected(self):
         with self.assertRaises(ValueError):
             airspace_cache._layer_paths("class_b")
-        self.assertEqual(airspace_cache.get_layer_geojson("tfr"), (None, None))
+        self.assertIsNone(airspace_cache.get_layer_path("tfr"))
 
 
 if __name__ == "__main__":

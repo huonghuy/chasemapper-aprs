@@ -56,6 +56,9 @@ _HEADERS = {
 _GML_NS = "http://www.opengis.net/gml/3.2"
 _CP_NS = "http://inspire.ec.europa.eu/schemas/cp/4.0"
 
+# urn-form EPSG:4326 is latitude-first, unlike the "EPSG:4326" short form.
+_URN_4326 = "urn:ogc:def:crs:EPSG::4326"
+
 
 def _build_session():
     """Session that retries on Catastro's connection resets.
@@ -86,14 +89,12 @@ def _build_session():
 _SESSION = _build_session()
 
 
-def _empty_fc(error=None, error_code=None, source=None):
+def _empty_fc(error=None, error_code=None):
     fc = {"type": "FeatureCollection", "features": []}
     if error:
         fc["error"] = error
     if error_code:
         fc["error_code"] = error_code
-    if source:
-        fc["source"] = source
     return fc
 
 
@@ -109,6 +110,27 @@ def _bbox_km(lat, lon, radius_km):
         "lon_min": lon - deg_lon,
         "lon_max": lon + deg_lon,
     }
+
+
+def _wfs_params(typenames, bbox, **extra):
+    """INSPIRE WFS 2.0 GetFeature params for a bbox, in the urn axis order.
+
+    Both cadastral WFS services take the same request; only the type name and a
+    couple of output options differ, so the lat-first BBOX convention - the easy
+    thing to get backwards - is written once.
+    """
+    params = {
+        "service": "WFS",
+        "version": "2.0.0",
+        "request": "GetFeature",
+        "TYPENAMES": typenames,
+        "SRSNAME": _URN_4326,
+        "BBOX": "{},{},{},{},{}".format(
+            bbox["lat_min"], bbox["lon_min"], bbox["lat_max"], bbox["lon_max"], _URN_4326
+        ),
+    }
+    params.update(extra)
+    return params
 
 
 def _feature(geometry, ref="", area_m2=None, municipality="", info_url=""):
@@ -185,17 +207,7 @@ def _parse_catastro_gml(xml_bytes):
 
 
 def _fetch_catastro(bbox):
-    params = {
-        "service": "WFS",
-        "version": "2.0.0",
-        "request": "GetFeature",
-        "TYPENAMES": "cp:CadastralParcel",
-        "SRSNAME": "urn:ogc:def:crs:EPSG::4326",
-        # urn-form EPSG:4326 is latitude-first, so the bbox is lat,lon ordered.
-        "BBOX": "{},{},{},{},urn:ogc:def:crs:EPSG::4326".format(
-            bbox["lat_min"], bbox["lon_min"], bbox["lat_max"], bbox["lon_max"]
-        ),
-    }
+    params = _wfs_params("cp:CadastralParcel", bbox)
     r = _SESSION.get(_CATASTRO_URL, params=params, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
     return _parse_catastro_gml(r.content)
@@ -209,18 +221,12 @@ _NAVARRA_URL = "https://inspire.navarra.es/services/CP/wfs"
 
 
 def _fetch_navarra(bbox):
-    params = {
-        "service": "WFS",
-        "version": "2.0.0",
-        "request": "GetFeature",
-        "TYPENAMES": "CP:CadastralParcel",
-        "SRSNAME": "urn:ogc:def:crs:EPSG::4326",
-        "BBOX": "{},{},{},{},urn:ogc:def:crs:EPSG::4326".format(
-            bbox["lat_min"], bbox["lon_min"], bbox["lat_max"], bbox["lon_max"]
-        ),
-        "OUTPUTFORMAT": "application/json",
-        "COUNT": MAX_FEATURES,
-    }
+    params = _wfs_params(
+        "CP:CadastralParcel",
+        bbox,
+        OUTPUTFORMAT="application/json",
+        COUNT=MAX_FEATURES,
+    )
     r = _SESSION.get(_NAVARRA_URL, params=params, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
     data = r.json()
@@ -379,11 +385,21 @@ PROVIDERS = [
         "bbox": {"lon_min": -18.5, "lat_min": 26.2, "lon_max": 5.3, "lat_max": 44.8},
         "fetch": _fetch_catastro,
     },
+    {
+        # Gipuzkoa runs its own cadastre but publishes no open parcel service.
+        # A fetch of None marks the territory as a known coverage gap, so a
+        # blank result here is reported as such rather than as a failure.
+        "name": "gipuzkoa",
+        "label": "Cadastre of Gipuzkoa (Diputacion Foral)",
+        "bbox": {"lon_min": -2.60, "lat_min": 42.90, "lon_max": -1.72, "lat_max": 43.40},
+        "fetch": None,
+        "error": (
+            "Gipuzkoa keeps its own cadastre and publishes no open parcel "
+            "service, so boundaries are not available here."
+        ),
+        "error_code": "no_open_service",
+    },
 ]
-
-# Gipuzkoa runs its own cadastre but publishes no open parcel service, so a
-# blank result there is a known gap rather than a failure.
-_GIPUZKOA_BBOX = {"lon_min": -2.60, "lat_min": 42.90, "lon_max": -1.72, "lat_max": 43.40}
 
 
 def _in_bbox(lat, lon, bbox):
@@ -422,10 +438,15 @@ def get_parcels_near(lat, lon, radius_km):
             "outside_coverage",
         )
 
+    # Territories with no service at all are held back: they only describe the
+    # result once every cadastre that could have covered the point has been tried.
+    gaps = [p for p in candidates if p["fetch"] is None]
+    fetchable = [p for p in candidates if p["fetch"] is not None]
+
     bbox = _bbox_km(lat, lon, radius_km)
     failures = []
 
-    for provider in candidates:
+    for provider in fetchable:
         try:
             features = provider["fetch"](bbox)
         except Exception as e:
@@ -449,17 +470,13 @@ def get_parcels_near(lat, lon, radius_km):
             fc["_truncated"] = True
         return fc
 
-    if failures and len(failures) == len(candidates):
+    if failures and len(failures) == len(fetchable):
         return _empty_fc(
             "Cadastral service is temporarily unavailable.", "upstream_unavailable"
         )
 
-    if _in_bbox(lat, lon, _GIPUZKOA_BBOX):
-        return _empty_fc(
-            "Gipuzkoa keeps its own cadastre and publishes no open parcel "
-            "service, so boundaries are not available here.",
-            "no_open_service",
-        )
+    if gaps:
+        return _empty_fc(gaps[0]["error"], gaps[0]["error_code"])
 
     return _empty_fc(
         "No cadastral parcels are published for this location.", "no_data"

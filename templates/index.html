@@ -849,11 +849,11 @@
             if (window.UIPersist) {
                 UIPersist.restoreRadioGroup('autoFollow', 'autoFollow');
 
-                var airspaceIds = [
-                    'toggle-airspace', 'toggle-ctr', 'toggle-tma',
-                    'toggle-cta', 'toggle-atz', 'toggle-restricted',
-                    'toggle-military', 'toggle-rmz-tmz', 'toggle-parcels'
-                ];
+                // Per-layer ids come from RecoveryOverlays so the layer list
+                // is not restated here and cannot drift out of step with it.
+                var airspaceIds = ['toggle-airspace']
+                    .concat(RecoveryOverlays.toggleIds())
+                    .concat(['toggle-parcels']);
                 airspaceIds.forEach(function (id) {
                     UIPersist.restoreCheckbox(id, id);
                 });
@@ -1416,31 +1416,31 @@
                 <div style="margin-left: 1.25em;">
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-ctr">
-                        <label class="form-check-label" for="toggle-ctr"><span style="color:#1f4ed8;">&#9632;</span> CTR &mdash; Control Zones</label>
+                        <label class="form-check-label" for="toggle-ctr"><span class="airspace-swatch" data-layer="ctr">&#9632;</span> CTR &mdash; Control Zones</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-tma">
-                        <label class="form-check-label" for="toggle-tma"><span style="color:#7c3aed;">&#9632;</span> TMA &mdash; Terminal Areas</label>
+                        <label class="form-check-label" for="toggle-tma"><span class="airspace-swatch" data-layer="tma">&#9632;</span> TMA &mdash; Terminal Areas</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-cta">
-                        <label class="form-check-label" for="toggle-cta"><span style="color:#0ea5e9;">&#9632;</span> CTA &mdash; Control Areas</label>
+                        <label class="form-check-label" for="toggle-cta"><span class="airspace-swatch" data-layer="cta">&#9632;</span> CTA &mdash; Control Areas</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-atz">
-                        <label class="form-check-label" for="toggle-atz"><span style="color:#64748b;">&#9632;</span> ATZ / FIZ &mdash; Aerodrome Zones</label>
+                        <label class="form-check-label" for="toggle-atz"><span class="airspace-swatch" data-layer="atz">&#9632;</span> ATZ / FIZ &mdash; Aerodrome Zones</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-restricted">
-                        <label class="form-check-label" for="toggle-restricted"><span style="color:#dc2626;">&#9632;</span> Danger / Restricted / Prohibited</label>
+                        <label class="form-check-label" for="toggle-restricted"><span class="airspace-swatch" data-layer="restricted">&#9632;</span> Danger / Restricted / Prohibited</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-military">
-                        <label class="form-check-label" for="toggle-military"><span style="color:#f97316;">&#9632;</span> Military &mdash; TSA / TRA</label>
+                        <label class="form-check-label" for="toggle-military"><span class="airspace-swatch" data-layer="military">&#9632;</span> Military &mdash; TSA / TRA</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-rmz-tmz">
-                        <label class="form-check-label" for="toggle-rmz-tmz"><span style="color:#10b981;">&#9632;</span> RMZ / TMZ</label>
+                        <label class="form-check-label" for="toggle-rmz-tmz"><span class="airspace-swatch" data-layer="rmz_tmz">&#9632;</span> RMZ / TMZ</label>
                     </div>
                 </div>
                 <div style="margin-top: 0.5em;">

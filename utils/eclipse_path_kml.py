@@ -38,6 +38,9 @@ DEFAULT_SITE = (42.46139, -4.10713, "Sordillos, Spain")
 # Central-line latitude at which the regional overlay starts.
 REGIONAL_START_LAT = 60.0
 
+# IUGG mean Earth radius, in metres.
+EARTH_RADIUS_M = 6371008.8
+
 # Colours as CSS #rrggbb. kml_colour() converts to KML's aabbggrr byte order.
 COLOUR_CENTRAL = "#e63946"
 COLOUR_LIMIT = "#f4a300"
@@ -85,7 +88,6 @@ def parse_path_table(text):
                 "south": (_coords[2], _coords[3]),
                 "central": (_coords[4], _coords[5]),
                 "sun_alt": None if _match.group("alt") == "-" else int(_match.group("alt")),
-                "sun_azm": None if _match.group("azm") == "-" else int(_match.group("azm")),
                 "width_km": int(_match.group("width")),
                 "duration": _match.group("dur"),
             }
@@ -94,18 +96,22 @@ def parse_path_table(text):
     return _rows
 
 
+def _angular_distance(lat1, lon1, lat2, lon2):
+    """ Haversine central angle, in radians. Arguments are already in radians. """
+    _h = (
+        math.sin((lat2 - lat1) / 2.0) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2.0) ** 2
+    )
+    return 2.0 * math.asin(math.sqrt(_h))
+
+
 def great_circle_point(start, end, fraction):
     """ Interpolate along the great circle between two (lat, lon) points. """
     _lat1, _lon1, _lat2, _lon2 = [
         math.radians(v) for v in (start[0], start[1], end[0], end[1])
     ]
 
-    _d = 2.0 * math.asin(
-        math.sqrt(
-            math.sin((_lat2 - _lat1) / 2.0) ** 2
-            + math.cos(_lat1) * math.cos(_lat2) * math.sin((_lon2 - _lon1) / 2.0) ** 2
-        )
-    )
+    _d = _angular_distance(_lat1, _lon1, _lat2, _lon2)
     if _d == 0.0:
         return start
 
@@ -140,26 +146,22 @@ def great_circle_distance(a, b):
     _lat1, _lon1, _lat2, _lon2 = [
         math.radians(v) for v in (a[0], a[1], b[0], b[1])
     ]
-    _h = (
-        math.sin((_lat2 - _lat1) / 2.0) ** 2
-        + math.cos(_lat1) * math.cos(_lat2) * math.sin((_lon2 - _lon1) / 2.0) ** 2
-    )
-    return 2.0 * 6371008.8 * math.asin(math.sqrt(_h))
+    return EARTH_RADIUS_M * _angular_distance(_lat1, _lon1, _lat2, _lon2)
 
 
 def closest_approach(site, rows, key):
     """ Closest approach of a densified path line to site.
 
-    Returns (distance_m, index of the segment's first row, fraction along it).
+    Returns (distance_m, index of the segment's first row).
     """
-    _best = (float("inf"), 0, 0.0)
+    _best = (float("inf"), 0)
 
     for _i, (_a, _b) in enumerate(zip(rows, rows[1:])):
         for _step in range(201):
             _f = _step / 200.0
             _d = great_circle_distance(site, great_circle_point(_a[key], _b[key], _f))
             if _d < _best[0]:
-                _best = (_d, _i, _f)
+                _best = (_d, _i)
 
     return _best
 
@@ -178,7 +180,7 @@ def _coord_block(points):
     return " ".join("%.6f,%.6f,0" % (lon, lat) for lat, lon in points)
 
 
-def line_placemark(name, description, points, colour, width, alpha=255):
+def line_placemark(name, description, points, colour, width):
     return """  <Placemark>
     <name>%s</name>
     <description>%s</description>
@@ -193,7 +195,7 @@ def line_placemark(name, description, points, colour, width, alpha=255):
 """ % (
         _escape(name),
         _escape(description),
-        kml_colour(colour, alpha),
+        kml_colour(colour),
         width,
         _coord_block(points),
     )
@@ -360,9 +362,9 @@ def inside_band(site, rows):
 
 def describe_site(site, rows):
     """ Human-readable summary of the site's position relative to the path. """
-    _central_d, _idx, _ = closest_approach(site, rows, "central")
-    _north_d, _, _ = closest_approach(site, rows, "north")
-    _south_d, _, _ = closest_approach(site, rows, "south")
+    _central_d, _idx = closest_approach(site, rows, "central")
+    _north_d, _ = closest_approach(site, rows, "north")
+    _south_d, _ = closest_approach(site, rows, "south")
 
     _before = rows[_idx]
     _after = rows[_idx + 1]

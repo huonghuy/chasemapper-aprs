@@ -270,10 +270,12 @@ def flask_airspace_layer(layer):
     auth = _check_recovery_auth()
     if auth is not None:
         return auth
-    data, _meta = airspace_cache.get_layer_geojson(layer)
-    if data is None:
+    path = airspace_cache.get_layer_path(layer)
+    if path is None:
         return flask.jsonify({"error": "unknown or uncached layer", "layer": layer}), 404
-    response = flask.jsonify(data)
+    # The cache file is already the exact GeoJSON the client wants, so it is
+    # streamed rather than parsed and re-serialised on every request.
+    response = flask.send_file(path, mimetype="application/json")
     # ENAIRE publishes on the 28-day AIRAC cycle, so this changes rarely.
     response.headers["Cache-Control"] = "public, max-age=300"
     return response

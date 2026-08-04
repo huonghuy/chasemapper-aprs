@@ -121,18 +121,8 @@ class GenericTrack(object):
             return 0.0
         elif len(self.track_history) == 2:
             # Basic ascent rate case - only 2 samples.
-            _time_delta = (
-                self.track_history[-1][0] - self.track_history[-2][0]
-            ).total_seconds()
-            _altitude_delta = self.track_history[-1][3] - self.track_history[-2][3]
-
-            if _time_delta == 0:
-                logging.warning(
-                    "Zero time-step encountered in ascent rate calculation - are multiple receivers reporting telemetry simultaneously?"
-                )
-                return 0.0
-            else:
-                return _altitude_delta / _time_delta
+            _rate = self.ascent_rate_sample(-1)
+            return 0.0 if _rate is None else _rate
 
         else:
             # ASCENT_AVERAGING may be fractional, so take the whole samples at full

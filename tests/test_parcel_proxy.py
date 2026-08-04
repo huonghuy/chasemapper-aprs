@@ -86,7 +86,10 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(self._providers_for(42.46139, -4.10713), ["catastro"])
 
     def test_catastro_is_always_the_last_resort(self):
-        self.assertEqual(parcel_proxy.PROVIDERS[-1]["name"], "catastro")
+        # Coverage gaps carry no fetcher and are never "tried", so the invariant
+        # is over the providers that actually make a request.
+        fetching = [p["name"] for p in parcel_proxy.PROVIDERS if p["fetch"] is not None]
+        self.assertEqual(fetching[-1], "catastro")
 
 
 class ValidationTests(unittest.TestCase):

@@ -89,6 +89,15 @@ function bindKmlPopup(feature, layer){
 }
 
 
+function loadKmlOverlayData(layer){
+    // omnivore populates the layer it is handed and returns it.
+    layer._kml_loaded = true;
+    omnivore.kml(layer._kml_url, null, layer).on("error", function(e) {
+        console.log("Error loading KML overlay", e);
+    });
+}
+
+
 function loadConfiguredKmlOverlays(config, map){
     var _overlay_layers = {};
 
@@ -103,28 +112,31 @@ function loadConfiguredKmlOverlays(config, map){
 
     for (var i = 0, len = config.kml_overlays.length; i < len; i++) {
         var _overlay = config.kml_overlays[i];
-        var _custom_layer = L.geoJson(null, {
+        var _layer = L.geoJson(null, {
             onEachFeature: bindKmlPopup,
             style: kmlFeatureStyle,
             pointToLayer: kmlPointToLayer
         });
 
-        var _layer = omnivore.kml(
-            "/overlays/kml/" + encodeURIComponent(_overlay.id),
-            null,
-            _custom_layer
-        );
-
-        _layer.on("error", function(e) {
-            console.log("Error loading KML overlay", e);
-        });
+        _layer._kml_url = "/overlays/kml/" + encodeURIComponent(_overlay.id);
+        _layer._kml_loaded = false;
 
         _overlay_layers[_overlay.name] = _layer;
 
+        // Fetching and parsing a KML the operator has switched off is pure
+        // waste, so overlays that start hidden load the first time they are
+        // shown from the layer control instead.
         if (_overlay.visible == true){
+            loadKmlOverlayData(_layer);
             _layer.addTo(map);
         }
     }
+
+    map.on("overlayadd", function(e) {
+        if (e.layer && e.layer._kml_url && !e.layer._kml_loaded){
+            loadKmlOverlayData(e.layer);
+        }
+    });
 
     return _overlay_layers;
 }

@@ -11,33 +11,41 @@
 (function () {
     "use strict";
 
-    var AIRSPACE_LAYERS = ["ctr", "tma", "cta", "atz", "restricted", "military", "rmz_tmz"];
-
-    // Blues for controlled airspace, reds/oranges for hazard areas, green for
-    // the equipment-mandatory zones.
-    var AIRSPACE_STYLE = {
-        ctr:        { color: "#1f4ed8", weight: 2, fillOpacity: 0.06 },
-        tma:        { color: "#7c3aed", weight: 2, fillOpacity: 0.04 },
-        cta:        { color: "#0ea5e9", weight: 1, fillOpacity: 0.03 },
-        atz:        { color: "#64748b", weight: 2, fillOpacity: 0.06 },
-        restricted: { color: "#dc2626", weight: 2, fillOpacity: 0.10 },
-        military:   { color: "#f97316", weight: 2, fillOpacity: 0.10 },
-        rmz_tmz:    { color: "#10b981", weight: 2, fillOpacity: 0.05 }
-    };
+    // Every per-layer fact lives here and nowhere else: the checkbox id, the
+    // pane, the draw order and the colour are all derived from this list, so
+    // adding or renaming a layer is a one-line edit.
+    //
+    // Listed bottom-to-top. Broad en-route areas sit below terminal airspace,
+    // which sits below the hazard areas a balloon most needs to see. Blues for
+    // controlled airspace, reds/oranges for hazard areas, green for the
+    // equipment-mandatory zones.
+    var AIRSPACE = [
+        { key: "cta",        color: "#0ea5e9", weight: 1, fillOpacity: 0.03 },
+        { key: "tma",        color: "#7c3aed", weight: 2, fillOpacity: 0.04 },
+        { key: "ctr",        color: "#1f4ed8", weight: 2, fillOpacity: 0.06 },
+        { key: "atz",        color: "#64748b", weight: 2, fillOpacity: 0.06 },
+        { key: "rmz_tmz",    color: "#10b981", weight: 2, fillOpacity: 0.05 },
+        { key: "military",   color: "#f97316", weight: 2, fillOpacity: 0.10 },
+        { key: "restricted", color: "#dc2626", weight: 2, fillOpacity: 0.10 }
+    ];
 
     // Separate SVG panes keep transparent polygons clickable without a
     // full-map Canvas renderer swallowing clicks intended for lower layers.
-    // Broad en-route areas sit below terminal airspace, which sits below the
-    // hazard areas a balloon most needs to see.
-    var AIRSPACE_PANES = {
-        cta:        { name: "airspace-cta", zIndex: 410 },
-        tma:        { name: "airspace-tma", zIndex: 420 },
-        ctr:        { name: "airspace-ctr", zIndex: 430 },
-        atz:        { name: "airspace-atz", zIndex: 440 },
-        rmz_tmz:    { name: "airspace-rmz-tmz", zIndex: 450 },
-        military:   { name: "airspace-military", zIndex: 460 },
-        restricted: { name: "airspace-restricted", zIndex: 470 }
-    };
+    var AIRSPACE_BY_KEY = {};
+    AIRSPACE.forEach(function (layer, index) {
+        var slug = layer.key.replace(/_/g, "-");
+        layer.toggleId = "toggle-" + slug;
+        layer.pane = "airspace-" + slug;
+        layer.zIndex = 410 + 10 * index;
+        layer.style = {
+            color: layer.color,
+            weight: layer.weight,
+            fillOpacity: layer.fillOpacity
+        };
+        AIRSPACE_BY_KEY[layer.key] = layer;
+    });
+
+    var AIRSPACE_LAYERS = AIRSPACE.map(function (layer) { return layer.key; });
 
     var PARCEL_STYLE = { color: "#ea580c", weight: 1, fillOpacity: 0.08 };
     var SEARCH_CIRCLE_STYLE = { color: "#dc2626", weight: 2, dashArray: "6,6", fill: false };
@@ -45,6 +53,7 @@
     var state = {
         map: null,
         landing: null,
+        lastFetchedLanding: null,
         airspaceData: {},
         airspaceLayers: {},
         parcelLayer: null,
@@ -69,19 +78,10 @@
     function appleMapsUrl(lat, lon) {
         return "https://maps.apple.com/?ll=" + lat + "," + lon + "&q=" + lat + "," + lon;
     }
-    function googleMapsAddrUrl(addr) {
-        return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(addr);
-    }
-    function appleMapsAddrUrl(addr) {
-        return "https://maps.apple.com/?address=" + encodeURIComponent(addr);
-    }
-
-    function mapsLinksHtml(lat, lon, addr) {
-        var g = addr ? googleMapsAddrUrl(addr) : googleMapsUrl(lat, lon);
-        var a = addr ? appleMapsAddrUrl(addr) : appleMapsUrl(lat, lon);
+    function mapsLinksHtml(lat, lon) {
         return (
-            '<a href="' + g + '" target="_blank" rel="noopener">Google Maps</a> · ' +
-            '<a href="' + a + '" target="_blank" rel="noopener">Apple Maps</a>'
+            '<a href="' + googleMapsUrl(lat, lon) + '" target="_blank" rel="noopener">Google Maps</a> · ' +
+            '<a href="' + appleMapsUrl(lat, lon) + '" target="_blank" rel="noopener">Apple Maps</a>'
         );
     }
 
@@ -161,9 +161,8 @@
     }
 
     function ensureAirspacePanes() {
-        Object.keys(AIRSPACE_PANES).forEach(function (layer) {
-            var config = AIRSPACE_PANES[layer];
-            var pane = state.map.getPane(config.name) || state.map.createPane(config.name);
+        AIRSPACE.forEach(function (config) {
+            var pane = state.map.getPane(config.pane) || state.map.createPane(config.pane);
             pane.style.zIndex = String(config.zIndex);
         });
     }
@@ -175,15 +174,19 @@
         }
         fetchAirspace(layer).then(function (data) {
             if (!data) return;
-            var sub = $("toggle-" + layer.replace(/_/g, "-"));
+            var sub = $(AIRSPACE_BY_KEY[layer].toggleId);
             if (!sub || !sub.checked) return;
             if (!$("toggle-airspace").checked) return;
             var leafletLayer = L.geoJSON(data, {
-                pane: AIRSPACE_PANES[layer].name,
-                style: AIRSPACE_STYLE[layer],
+                pane: AIRSPACE_BY_KEY[layer].pane,
+                style: AIRSPACE_BY_KEY[layer].style,
                 interactive: true,
                 onEachFeature: function (feature, lyr) {
-                    lyr.bindPopup(buildAirspacePopup(layer, feature.properties));
+                    // Built on open, not up front - a layer can carry thousands
+                    // of features and the operator opens a handful of popups.
+                    lyr.bindPopup(function () {
+                        return buildAirspacePopup(layer, feature.properties);
+                    });
                 }
             });
             state.airspaceLayers[layer] = leafletLayer;
@@ -200,13 +203,12 @@
 
     function syncAirspace() {
         var masterOn = $("toggle-airspace").checked;
-        AIRSPACE_LAYERS.forEach(function (layer) {
-            var subId = "toggle-" + layer.replace(/_/g, "-");
-            var sub = $(subId);
+        AIRSPACE.forEach(function (config) {
+            var sub = $(config.toggleId);
             if (masterOn && sub && sub.checked) {
-                showAirspaceLayer(layer);
+                showAirspaceLayer(config.key);
             } else {
-                hideAirspaceLayer(layer);
+                hideAirspaceLayer(config.key);
             }
         });
     }
@@ -280,6 +282,31 @@
         )).addTo(state.map);
     }
 
+    function buildParcelPopup(props, sourceLabel) {
+        var p = props || {};
+        // Spanish cadastres publish no owner names, so the cadastral reference
+        // is the way to identify a plot.
+        var html = "<b>" + escapeHtml(p.ref || "(no reference)") + "</b>";
+        if (p.area_m2) {
+            html += "<br>" + Math.round(p.area_m2).toLocaleString() + " m&sup2;";
+        }
+        if (p.municipality) {
+            html += "<br><small>Municipality " + escapeHtml(p.municipality) + "</small>";
+        }
+        if (sourceLabel) {
+            html += "<br><small>" + escapeHtml(sourceLabel) + "</small>";
+        }
+        if (p.info_url) {
+            html += '<br><small><a href="' + escapeHtml(p.info_url) +
+                    '" target="_blank" rel="noopener">Cadastre record</a></small>';
+        }
+        html += "<br>" + mapsLinksHtml(
+            state.landing ? state.landing[0] : 0,
+            state.landing ? state.landing[1] : 0
+        );
+        return html;
+    }
+
     function fetchParcels() {
         if (!$("toggle-parcels").checked) return;
         if (!state.landing) {
@@ -287,6 +314,7 @@
             return;
         }
         var radius = getRadiusKm();
+        state.lastFetchedLanding = state.landing;
         renderSearchCircle();
         var url = "/parcels?lat=" + state.landing[0] +
                   "&lon=" + state.landing[1] +
@@ -319,28 +347,11 @@
                     renderer: state.parcelCanvas,
                     style: PARCEL_STYLE,
                     onEachFeature: function (feature, lyr) {
-                        var p = feature.properties || {};
-                        // Spanish cadastres publish no owner names, so the
-                        // cadastral reference is the way to identify a plot.
-                        var html = "<b>" + escapeHtml(p.ref || "(no reference)") + "</b>";
-                        if (p.area_m2) {
-                            html += "<br>" + Math.round(p.area_m2).toLocaleString() + " m&sup2;";
-                        }
-                        if (p.municipality) {
-                            html += "<br><small>Municipality " + escapeHtml(p.municipality) + "</small>";
-                        }
-                        if (data.source_label) {
-                            html += "<br><small>" + escapeHtml(data.source_label) + "</small>";
-                        }
-                        if (p.info_url) {
-                            html += '<br><small><a href="' + escapeHtml(p.info_url) +
-                                    '" target="_blank" rel="noopener">Cadastre record</a></small>';
-                        }
-                        html += "<br>" + mapsLinksHtml(
-                            state.landing ? state.landing[0] : 0,
-                            state.landing ? state.landing[1] : 0
-                        );
-                        lyr.bindPopup(html);
+                        // Built on open, not up front - a result can run to
+                        // thousands of parcels and almost none get clicked.
+                        lyr.bindPopup(function () {
+                            return buildParcelPopup(feature.properties, data.source_label);
+                        });
                     }
                 }).addTo(state.map);
                 var count = (data.features || []).length;
@@ -359,12 +370,32 @@
         state.parcelTimer = setTimeout(fetchParcels, 400);
     }
 
+    // A prediction lands every ~15 s, far apart for the debounce to coalesce,
+    // and the landing point usually shifts only metres between them. Refetching
+    // the same parcels that often is what provokes the cadastre's rate limiting.
+    function landingMovedEnoughToRefetch() {
+        if (!state.lastFetchedLanding) return true;
+        var movedMetres = state.map.distance(state.landing, state.lastFetchedLanding);
+        return movedMetres > getRadiusKm() * 100.0;   // 10% of the search radius
+    }
+
+    // The sidebar legend swatches take their colour from the layer table, so a
+    // colour is defined in exactly one place and the legend cannot lie.
+    function colourSwatches() {
+        var swatches = document.querySelectorAll(".airspace-swatch[data-layer]");
+        Array.prototype.forEach.call(swatches, function (el) {
+            var config = AIRSPACE_BY_KEY[el.getAttribute("data-layer")];
+            if (config) el.style.color = config.color;
+        });
+    }
+
     function wireToggles() {
         $("toggle-airspace").addEventListener("change", syncAirspace);
-        AIRSPACE_LAYERS.forEach(function (layer) {
-            var el = $("toggle-" + layer.replace(/_/g, "-"));
+        AIRSPACE.forEach(function (config) {
+            var el = $(config.toggleId);
             if (el) el.addEventListener("change", syncAirspace);
         });
+        colourSwatches();
         var refreshBtn = $("airspace-refresh-btn");
         if (refreshBtn) refreshBtn.addEventListener("click", refreshAirspaceFromENAIRE);
 
@@ -425,13 +456,19 @@
             }
 
             if ($("toggle-parcels") && $("toggle-parcels").checked) {
-                debounceParcelFetch();
+                if (landingMovedEnoughToRefetch()) debounceParcelFetch();
             }
         },
 
         attachLandingPopup: function (marker, lat, lon, title) {
             if (!marker || typeof lat !== "number" || typeof lon !== "number") return;
             attachLandingPopup(marker, lat, lon, title);
+        },
+
+        // The per-layer checkbox ids, so callers that persist or replay the
+        // toggles do not have to restate the layer list.
+        toggleIds: function () {
+            return AIRSPACE.map(function (config) { return config.toggleId; });
         },
 
         _state: function () { return state; }

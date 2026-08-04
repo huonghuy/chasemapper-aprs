@@ -49,8 +49,6 @@ _AIRSPACE_URL = (
     "Aero_SRV_VIGOR_V2/FeatureServer/41/query"
 )
 
-LAYERS = ("ctr", "tma", "cta", "atz", "restricted", "military", "rmz_tmz")
-
 # ENAIRE TYPE_CODE values grouped into the layers the UI exposes. The "-P"
 # suffixed codes are the sector subdivisions of their parent area (e.g. TMA-P
 # "TGAL-1" is part of the Galicia TMA) and carry real vertical limits, so they
@@ -73,6 +71,10 @@ _LAYER_TYPES = {
     "military": ("TSA", "TRA"),
     "rmz_tmz": ("RMZ", "TMZ"),
 }
+
+# The layer set is defined once, by _LAYER_TYPES. Deriving the served list from
+# it means a layer can never be exposed without a type mapping behind it.
+LAYERS = tuple(_LAYER_TYPES)
 
 # Vertical limits come from the DISTVERT{LOWER,UPPER}_* triplet, NOT from
 # LOWER_VAL / UPPER_VAL. Those two look like altitudes in feet but are render
@@ -154,21 +156,23 @@ def _write_layer(layer, geojson, fetched_at):
     )
 
 
-def _read_layer(layer):
-    geo_path, meta_path = _layer_paths(layer)
-    if not os.path.exists(geo_path):
-        return None, None
+def _layer_cached(layer):
+    """Is this layer on disk? Deliberately does not parse the GeoJSON."""
+    geo_path, _ = _layer_paths(layer)
+    return os.path.exists(geo_path)
+
+
+def _read_meta(layer):
+    """The layer's small sidecar metadata, or None. Does not touch the GeoJSON."""
+    _, meta_path = _layer_paths(layer)
+    if not os.path.exists(meta_path):
+        return None
     try:
-        with open(geo_path) as f:
-            geo = json.load(f)
-        meta = None
-        if os.path.exists(meta_path):
-            with open(meta_path) as f:
-                meta = json.load(f)
-        return geo, meta
+        with open(meta_path) as f:
+            return json.load(f)
     except Exception as e:
-        logging.warning("Airspace cache: failed to read %s: %s", layer, e)
-        return None, None
+        logging.warning("Airspace cache: failed to read %s metadata: %s", layer, e)
+        return None
 
 
 def _bbox_geometry_param():
@@ -365,9 +369,6 @@ def _fetch_airspace(layer):
 
 
 def _refresh_layer(layer):
-    if layer not in _LAYER_TYPES:
-        raise ValueError("unknown layer: " + layer)
-
     fetched_at = time.time()
     geo = _fetch_airspace(layer)
 
@@ -394,19 +395,26 @@ def _refresh_loop(layer, interval_sec):
         _try_refresh(layer)
 
 
-def get_layer_geojson(layer):
-    """Returns (geojson_dict, meta_dict). Either may be None if not cached."""
+def get_layer_path(layer):
+    """Absolute path to the cached GeoJSON, or None if unknown or not cached.
+
+    The file on disk is already exactly what the frontend asks for, so callers
+    serve it verbatim rather than parsing and re-serialising it.
+    """
     if layer not in LAYERS:
-        return None, None
-    return _read_layer(layer)
+        return None
+    geo_path, _ = _layer_paths(layer)
+    if not os.path.exists(geo_path):
+        return None
+    return os.path.abspath(geo_path)
 
 
 def get_status():
     now = time.time()
     out = {}
     for layer in LAYERS:
-        geo, meta = _read_layer(layer)
-        cached = geo is not None
+        meta = _read_meta(layer)
+        cached = _layer_cached(layer)
         fetched_at = meta.get("fetched_at") if meta else None
         feature_count = meta.get("feature_count") if meta else 0
         age_seconds = (now - fetched_at) if fetched_at else None
@@ -421,6 +429,31 @@ def get_status():
     return out
 
 
+def _refresh_layers_parallel(layers):
+    """Refresh several layers at once. Returns {layer: succeeded}.
+
+    One thread per layer, so a round costs one request timeout rather than one
+    per layer. ENAIRE is slow enough that doing this serially is minutes.
+    """
+    # Pre-populate so a worker that outlives the join timeout still
+    # leaves a (False) entry rather than a missing key.
+    results = {layer: False for layer in layers}
+    threads = []
+
+    def worker(layer):
+        results[layer] = _try_refresh(layer)
+
+    for layer in layers:
+        t = threading.Thread(target=worker, args=(layer,), daemon=True)
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join(timeout=REQUEST_TIMEOUT + 5)
+
+    return results
+
+
 def force_refresh_all():
     """Re-fetch every layer from ENAIRE now. Runs layers in parallel; serialised
     with a global lock so concurrent button presses coalesce into one round.
@@ -432,22 +465,7 @@ def force_refresh_all():
         _refresh_in_progress = True
 
     try:
-        # Pre-populate so a worker that outlives the join timeout still
-        # leaves a (False) entry rather than a missing key.
-        results = {layer: False for layer in LAYERS}
-        threads = []
-
-        def worker(layer):
-            results[layer] = _try_refresh(layer)
-
-        for layer in LAYERS:
-            t = threading.Thread(target=worker, args=(layer,), daemon=True)
-            t.start()
-            threads.append(t)
-
-        for t in threads:
-            t.join(timeout=REQUEST_TIMEOUT + 5)
-
+        results = _refresh_layers_parallel(LAYERS)
         return {"already_running": False, "results": results, "status": get_status()}
     finally:
         _refresh_in_progress = False
@@ -463,13 +481,17 @@ def start_background_refresh():
 
     _ensure_cache_dir()
 
-    for layer in LAYERS:
-        geo, _ = _read_layer(layer)
-        if geo is None:
-            logging.info("Airspace cache: no cache for %s, fetching synchronously", layer)
-            _try_refresh(layer)
-        else:
-            logging.info("Airspace cache: loading %s from cache", layer)
+    missing = [layer for layer in LAYERS if not _layer_cached(layer)]
+    cached = [layer for layer in LAYERS if layer not in missing]
+    if cached:
+        logging.info("Airspace cache: loading %s from cache", ", ".join(cached))
+    if missing:
+        # Blocks startup, so the layers go out together rather than one at a
+        # time - serially this is up to REQUEST_TIMEOUT per layer.
+        logging.info(
+            "Airspace cache: no cache for %s, fetching synchronously", ", ".join(missing)
+        )
+        _refresh_layers_parallel(missing)
 
     for layer in LAYERS:
         threading.Thread(
