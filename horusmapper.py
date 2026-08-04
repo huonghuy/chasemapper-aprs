@@ -233,7 +233,7 @@ def flask_server_kml_overlay(overlay_id):
     )
 
 
-# Recovery overlays (ENAIRE airspace, MD parcels). Auth gated when
+# Recovery overlays (ENAIRE airspace, Spanish cadastral parcels). Auth gated when
 # RECOVERY_API_KEY is set in the environment, intended for use behind
 # Cloudflare with a Transform Rule injecting X-Recovery-Key.
 RECOVERY_API_KEY = os.environ.get("RECOVERY_API_KEY", "")
@@ -292,8 +292,13 @@ def flask_parcels():
             raise ValueError("non-finite value")
     except (TypeError, ValueError):
         return flask.jsonify({"error": "lat, lon, radius are required numeric query params"}), 400
-    if radius > 1.0:
-        return flask.jsonify({"error": "radius capped at 1.0 mi"}), 400
+    if radius > parcel_proxy.RADIUS_MAX_KM:
+        return (
+            flask.jsonify(
+                {"error": "radius capped at %s km" % parcel_proxy.RADIUS_MAX_KM}
+            ),
+            400,
+        )
     return flask.jsonify(parcel_proxy.get_parcels_near(lat, lon, radius))
 
 

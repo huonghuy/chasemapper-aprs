@@ -266,7 +266,7 @@
         }
     }
 
-    function getRadiusMiles() {
+    function getRadiusKm() {
         var slider = $("parcel-radius");
         return slider ? parseFloat(slider.value) : 0.5;
     }
@@ -274,7 +274,7 @@
     function renderSearchCircle() {
         if (!state.landing) return;
         if (state.searchCircle) state.map.removeLayer(state.searchCircle);
-        var radiusMeters = getRadiusMiles() * 1609.344;
+        var radiusMeters = getRadiusKm() * 1000.0;
         state.searchCircle = L.circle(state.landing, Object.assign(
             { radius: radiusMeters }, SEARCH_CIRCLE_STYLE
         )).addTo(state.map);
@@ -286,7 +286,7 @@
             setStatus("parcel-status", "Waiting for predicted landing point…");
             return;
         }
-        var radius = getRadiusMiles();
+        var radius = getRadiusKm();
         renderSearchCircle();
         var url = "/parcels?lat=" + state.landing[0] +
                   "&lon=" + state.landing[1] +
@@ -301,11 +301,14 @@
                         state.map.removeLayer(state.parcelLayer);
                         state.parcelLayer = null;
                     }
-                    setStatus(
-                        "parcel-status",
-                        data.error,
-                        data.error_code !== "outside_md"
+                    // Being outside a cadastre's coverage is expected, not a
+                    // fault; only flag genuine failures in red.
+                    var expected = (
+                        data.error_code === "outside_coverage" ||
+                        data.error_code === "no_open_service" ||
+                        data.error_code === "no_data"
                     );
+                    setStatus("parcel-status", data.error, !expected);
                     return;
                 }
                 if (state.parcelLayer) {
@@ -317,19 +320,32 @@
                     style: PARCEL_STYLE,
                     onEachFeature: function (feature, lyr) {
                         var p = feature.properties || {};
-                        var owner = p.OWNNAME1 || "(no owner)";
-                        var addr = p.PREMISEADD || "";
-                        var acct = p.ACCTID || "";
-                        var html =
-                            "<b>" + owner + "</b><br>" +
-                            (addr ? addr + "<br>" : "") +
-                            (acct ? "<small>Acct: " + acct + "</small><br>" : "") +
-                            mapsLinksHtml(0, 0, addr || (state.landing && (state.landing[0] + "," + state.landing[1])));
+                        // Spanish cadastres publish no owner names, so the
+                        // cadastral reference is the way to identify a plot.
+                        var html = "<b>" + escapeHtml(p.ref || "(no reference)") + "</b>";
+                        if (p.area_m2) {
+                            html += "<br>" + Math.round(p.area_m2).toLocaleString() + " m&sup2;";
+                        }
+                        if (p.municipality) {
+                            html += "<br><small>Municipality " + escapeHtml(p.municipality) + "</small>";
+                        }
+                        if (data.source_label) {
+                            html += "<br><small>" + escapeHtml(data.source_label) + "</small>";
+                        }
+                        if (p.info_url) {
+                            html += '<br><small><a href="' + escapeHtml(p.info_url) +
+                                    '" target="_blank" rel="noopener">Cadastre record</a></small>';
+                        }
+                        html += "<br>" + mapsLinksHtml(
+                            state.landing ? state.landing[0] : 0,
+                            state.landing ? state.landing[1] : 0
+                        );
                         lyr.bindPopup(html);
                     }
                 }).addTo(state.map);
                 var count = (data.features || []).length;
-                var msg = count + " parcels within " + radius + " mi";
+                var msg = count + " parcels within " + radius + " km";
+                if (data.source_label) msg += " · " + data.source_label;
                 if (data._truncated) msg += " (TRUNCATED, results capped)";
                 setStatus("parcel-status", msg, !!data._truncated);
             })
@@ -365,10 +381,10 @@
         var label = $("parcel-radius-val");
         if (slider) {
             slider.addEventListener("input", function () {
-                if (label) label.textContent = parseFloat(slider.value).toFixed(2) + " mi";
+                if (label) label.textContent = parseFloat(slider.value).toFixed(2) + " km";
                 if ($("toggle-parcels").checked) debounceParcelFetch();
             });
-            if (label) label.textContent = parseFloat(slider.value).toFixed(2) + " mi";
+            if (label) label.textContent = parseFloat(slider.value).toFixed(2) + " km";
         }
     }
 

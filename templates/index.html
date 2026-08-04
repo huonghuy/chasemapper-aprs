@@ -282,7 +282,7 @@
             // Setup a basic Leaflet map
             map = L.map('map').setView([chase_config.default_lat, chase_config.default_lon], 8);
 
-            // Initialise recovery overlays module (ENAIRE airspace + MD parcels). Toggles default off.
+            // Initialise recovery overlays module (ENAIRE airspace + Spanish cadastral parcels). Toggles default off.
             if (window.RecoveryOverlays) { RecoveryOverlays.init(map); }
 
             // Initialise per-profile geofence overlay (HAB Bounder KML uploads).
@@ -1453,17 +1453,22 @@
                     &mdash; NOTAMs are not included here, so check them separately.
                 </div>
 
-                <h3>Parcels (MD)</h3>
+                <h3>Cadastral Parcels</h3>
                 <div class="form-switch form-check-reverse">
                     <input class="form-check-input" type="checkbox" role="switch" id="toggle-parcels">
-                    <label class="form-check-label" for="toggle-parcels"><b>Show MD Parcels Near Landing</b></label>
+                    <label class="form-check-label" for="toggle-parcels"><b>Show Parcels Near Landing</b></label>
                 </div>
                 <div class="paramRow" style="margin-top: 0.5em;">
                     <b>Radius:</b>
-                    <input type="range" id="parcel-radius" min="0.25" max="1.0" step="0.25" value="0.5" style="vertical-align: middle;">
-                    <span id="parcel-radius-val">0.50 mi</span>
+                    <input type="range" id="parcel-radius" min="0.25" max="2.0" step="0.25" value="0.5" style="vertical-align: middle;">
+                    <span id="parcel-radius-val">0.50 km</span>
                 </div>
                 <div class="status" id="parcel-status" style="font-style: italic; color: #6b7280; font-size: 0.85em; margin-top: 0.5em;"></div>
+                <div style="font-size: 0.8em; color: #b45309; margin-top: 0.5em;">
+                    Boundaries and cadastral reference only &mdash; Spanish cadastres
+                    do not publish owner names. Navarra, &Aacute;lava and Bizkaia are
+                    served by their own foral cadastres; Gipuzkoa publishes none.
+                </div>
             </div>
         </div>
     </div>
