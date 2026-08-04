@@ -16,6 +16,10 @@ except ImportError:
     from configparser import RawConfigParser
 
 
+# Root of the chasemapper install (the directory containing horusmapper.py).
+_INSTALL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 default_config = {
     # Start location for the map (until either a chase car position, or balloon position is available.)
     "default_lat": -34.9,
@@ -221,6 +225,13 @@ def parse_config_file(filename):
         if _overlay_name == "" or _overlay_path == "":
             logging.warning("Skipping KML overlay %d with missing name or path.", i)
             continue
+
+        # Resolve relative paths against the chasemapper install directory, so the
+        # same config works both natively and inside the container (where the app
+        # lives at /opt/chasemapper, not wherever the repo is checked out).
+        if not os.path.isabs(_overlay_path):
+            _overlay_path = os.path.join(_INSTALL_DIR, _overlay_path)
+        _overlay_path = os.path.normpath(_overlay_path)
 
         chase_config["kml_overlays"].append(
             {

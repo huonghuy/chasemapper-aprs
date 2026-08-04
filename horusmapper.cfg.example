@@ -349,7 +349,9 @@ reload_last_position = True
 #   KML Overlays
 #
 #   Optional fixed KML overlays to show on the main map.
-#   Files are served only if listed here. Use absolute paths.
+#   Files are served only if listed here. Paths may be absolute, or relative
+#   to the chasemapper install directory (relative is what you want if you run
+#   under Docker - the app lives at /opt/chasemapper inside the container).
 #   Placemarks, paths, and polygons are supported via leaflet-omnivore.
 #
 overlay_count = 2
@@ -358,13 +360,13 @@ overlay_count = 2
 #   python3 utils/eclipse_path_kml.py --output-dir overlays/
 # Source data is the NASA/GSFC path table (Fred Espenak), WGS 84, 120 s sampling.
 overlay_1_name = Eclipse Path (Iberia)
-overlay_1_path = /Users/huyhuong/Git-Repos/chasemapper/overlays/eclipse_2026_path_iberia.kml
+overlay_1_path = overlays/eclipse_2026_path_iberia.kml
 overlay_1_visible = True
 
 # The complete path from the Arctic down to the Mediterranean. Off by default -
 # it crosses the north pole, which Web Mercator cannot draw sensibly.
 overlay_2_name = Eclipse Path (Full)
-overlay_2_path = /Users/huyhuong/Git-Repos/chasemapper/overlays/eclipse_2026_path_full.kml
+overlay_2_path = overlays/eclipse_2026_path_full.kml
 overlay_2_visible = False
 
 # Example:
