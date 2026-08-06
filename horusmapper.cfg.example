@@ -53,8 +53,8 @@ car_source_port = 55672
 online_tracker = sondehubamateur
 
 # Per-profile APRS-IS callsigns. Only used if car_source_type = aprsis.
-aprsis_balloon_callsigns = KC3SKW-8, KC3SKW-9
-aprsis_car_callsigns = KC1RBW-2,KC1YRV-2
+aprsis_balloon_callsigns = KC1MHU-11
+aprsis_car_callsigns = KC1RBW-2
 aprsis_active_car_callsign = KC1RBW-2
 
 # Other profiles can be defined in sections like the following:
@@ -69,8 +69,8 @@ car_source_port = 55672
 online_tracker = sondehubamateur
 
 # Per-profile APRS-IS callsigns.
-aprsis_balloon_callsigns = W3EAX-11, W3EAX-12
-aprsis_car_callsigns = KC1RBW-2, KC1YRV-2
+aprsis_balloon_callsigns = KC1MHU-12
+aprsis_car_callsigns = KC1RBW-2
 aprsis_active_car_callsign = KC1RBW-2
 
 [gpsd]
