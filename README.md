@@ -90,6 +90,117 @@ not errors with your setup:
 * `SyntaxWarning: invalid escape sequence '\!'` from `aprslib` — a
   cosmetic warning in an upstream library, not our code.
 
+## Building from Source on Windows (Docker Desktop)
+
+The Quickstart pulls a prebuilt image. If you want to build the image
+yourself on a Windows laptop, everything below runs in **PowerShell**
+(Windows Terminal, or `cmd` — the commands are the same either way).
+
+**Prerequisites**
+
+* Docker Desktop for Windows, running, with the **WSL 2 backend** enabled
+  (Settings → General → "Use the WSL 2 based engine"). The build compiles
+  numpy and the CUSF predictor from source, so the Hyper-V backend works
+  but is noticeably slower.
+* Git for Windows.
+* ~4 GB free disk and a working internet connection — the build downloads
+  Debian packages, Python wheels, and the CUSF predictor source.
+
+Confirm Docker is up before starting:
+```powershell
+docker version
+docker compose version
+```
+
+**1. Clone and configure**
+```powershell
+git clone https://github.com/huonghuy/chasemapper-aprs.git
+cd chasemapper-aprs
+copy horusmapper.cfg.example horusmapper.cfg
+copy docker-compose.yml.example docker-compose.yml
+```
+Edit `horusmapper.cfg` (Notepad, VS Code, whatever you like) and set at
+least `default_lat` / `default_lon` and your APRS-IS callsigns.
+
+Create an empty `.env` — Compose requires the file to exist even if you
+have no secrets to set:
+```powershell
+New-Item -ItemType File .env
+```
+(In `cmd`, use `type nul > .env` instead.)
+
+**2. Make docker-compose.yml build locally instead of pulling**
+
+In `docker-compose.yml`, comment out the `image:` line and uncomment
+`build: .`:
+```yaml
+    # image: ghcr.io/huonghuy/chasemapper-aprs:UB-Spain
+    build: .
+```
+
+**3. Fix the networking for Windows**
+
+`network_mode: host` **does not work on Docker Desktop for Windows** —
+the container would get the WSL VM's network, not your laptop's, and the
+UI would be unreachable. Remove (or comment out) that line and uncomment
+the `ports:` block:
+```yaml
+    # network_mode: host
+    ports:
+      - "5001:5001"
+```
+Note that with port mapping you lose UDP-broadcast telemetry ingest from
+decoders running on the host (Horus-GUI, lora_gateway). APRS-IS and SPOT
+still work fine, since those are outbound connections.
+
+**4. Build**
+```powershell
+docker compose build
+```
+Expect **10–25 minutes** on the first build — numpy is compiled from
+source (`--no-binary=numpy`) and the CUSF predictor is built with
+cmake/make. Later rebuilds are much faster thanks to the apt and pip
+cache mounts in the Dockerfile.
+
+To build the image directly without Compose:
+```powershell
+docker build -t chasemapper-aprs:local .
+```
+
+**5. Run**
+```powershell
+docker compose up -d
+docker compose logs -f chasemapper
+```
+Then open <http://localhost:5001/> in your browser. See "Expected startup
+noise" above for the messages that are normal on a first boot.
+
+**6. Rebuild after changing code or config**
+```powershell
+docker compose up -d --build
+```
+Changes to `horusmapper.cfg` alone don't need a rebuild — it's bind
+mounted, so `docker compose restart chasemapper` is enough.
+
+**Windows-specific gotchas**
+
+* **Line endings.** Git for Windows defaults to `core.autocrlf true`,
+  which rewrites checked-out files with CRLF. That's harmless for the
+  Python and config files here, but if you ever add a shell script to the
+  image, set `git config --global core.autocrlf input` before cloning to
+  avoid `\r` errors inside the Linux container.
+* **Build the image on the Linux filesystem if it's slow.** Cloning into
+  your Windows user folder means the build context crosses the
+  Windows↔WSL filesystem boundary. If builds feel sluggish, clone into
+  the WSL 2 distro instead (`\\wsl$\Ubuntu\home\<you>\`) and run the
+  Docker commands from there.
+* **File-sharing prompt.** The first `docker compose up` may ask Docker
+  Desktop to share the drive holding the repo. Accept it, or the
+  `horusmapper.cfg` bind mount will fail.
+* **Path separators.** Keep the forward slashes in `docker-compose.yml`
+  volume paths (`./horusmapper.cfg:/opt/...`) — Compose expects them even
+  on Windows.
+
 ## Docker Install (detailed)
 The above Quickstart covers the common case. If you want background on
 the upstream Docker setup (advanced volume mounts, offline mapping,
