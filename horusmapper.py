@@ -52,7 +52,8 @@ from chasemapper.habitat import (
 )
 from chasemapper.sondehub import SondehubChaseUploader
 from chasemapper.logger import ChaseLogger
-from chasemapper.logread import read_last_balloon_telemetry
+from chasemapper.logread import read_last_balloon_telemetry, read_file as read_chase_log
+from chasemapper import kml_export
 from chasemapper.bearings import Bearings
 from chasemapper.tawhiri import get_tawhiri_prediction
 from chasemapper import airspace_cache, parcel_proxy, car_track_cache
@@ -480,6 +481,238 @@ def flask_restore_geofence(profile_id):
         "geofence": restored,
         "has_trash": geofence_mod.has_trash(geofence_store, profile_id),
     })
+
+
+# Post-flight KML export. Bundles the launch prediction, the flown APRS
+# track, the active profile's geofence and the configured KML overlays
+# into a single file for Google Earth. Gated the same way as /geofence,
+# since it carries the same geofence data.
+
+LOG_DIR = "./log_files"
+
+
+def _chase_log_dir():
+    """Directory the chase logger is writing to."""
+    if chase_logger and getattr(chase_logger, "filename", None):
+        return os.path.dirname(chase_logger.filename) or LOG_DIR
+    return LOG_DIR
+
+
+def _list_chase_logs():
+    """Chase log files, newest first."""
+    _dir = _chase_log_dir()
+    _current = (
+        os.path.basename(chase_logger.filename)
+        if (chase_logger and getattr(chase_logger, "filename", None))
+        else None
+    )
+
+    _logs = []
+    try:
+        _names = os.listdir(_dir)
+    except OSError as e:
+        logging.error("Could not list log directory %s: %s" % (_dir, e))
+        return _logs
+
+    for _name in _names:
+        if not _name.endswith(".log"):
+            continue
+        _path = os.path.join(_dir, _name)
+        try:
+            _stat = os.stat(_path)
+        except OSError:
+            continue
+        _logs.append(
+            {
+                "name": _name,
+                "size": _stat.st_size,
+                "modified": _stat.st_mtime,
+                "current": _name == _current,
+            }
+        )
+
+    _logs.sort(key=lambda _l: _l["modified"], reverse=True)
+    return _logs
+
+
+def _resolve_chase_log(name):
+    """Map a requested log name onto a path inside the log directory.
+
+    Returns None if the name escapes the directory or doesn't exist.
+    """
+    _dir = _chase_log_dir()
+
+    if not name:
+        # Default to the session's own log, falling back to the newest
+        # on disk (e.g. after a restart, or when run with --nolog).
+        if chase_logger and getattr(chase_logger, "filename", None):
+            name = os.path.basename(chase_logger.filename)
+        else:
+            _logs = _list_chase_logs()
+            if not _logs:
+                return None
+            name = _logs[0]["name"]
+
+    # Only ever a bare filename in the log directory.
+    if os.path.basename(name) != name or not name.endswith(".log"):
+        return None
+
+    _path = os.path.join(_dir, name)
+    return _path if os.path.isfile(_path) else None
+
+
+def _profile_balloon_callsigns(profile_name):
+    """Balloon callsigns configured for a profile (upper-cased by
+    read_config). Empty for profiles that don't use APRS-IS."""
+    _profile = chasemapper_config.get("profiles", {}).get(profile_name, {})
+    return list(_profile.get("aprsis_balloon_callsigns", []) or [])
+
+
+@app.route("/export/flights")
+def flask_export_flights():
+    """List the chase logs available to export."""
+    auth = _check_recovery_auth()
+    if auth is not None:
+        return auth
+
+    return flask.jsonify({"logs": _list_chase_logs()})
+
+
+@app.route("/export/payloads")
+def flask_export_payloads():
+    """List the payloads present in a chase log.
+
+    A chase log holds every balloon the APRS-IS filter matched, not just
+    the ones this profile flew, so the client shows the operator what is
+    actually in the file and pre-selects the active profile's callsigns.
+    """
+    auth = _check_recovery_auth()
+    if auth is not None:
+        return auth
+
+    _path = _resolve_chase_log(flask.request.args.get("log", ""))
+    if _path is None:
+        return flask.jsonify({"error": "unknown log file."}), 404
+
+    try:
+        _entries = read_chase_log(_path)
+    except Exception as e:
+        logging.error("KML export - could not read %s: %s" % (_path, e))
+        return flask.jsonify({"error": "could not read log file."}), 500
+
+    _profile = chasemapper_config.get("selected_profile", "")
+    _profile_calls = _profile_balloon_callsigns(_profile)
+    _wanted = {_call.upper() for _call in _profile_calls}
+
+    _payloads = kml_export.summarise_payloads(_entries)
+    for _payload in _payloads:
+        _payload["in_profile"] = _payload["callsign"].upper() in _wanted
+
+    return flask.jsonify(
+        {
+            "log": os.path.basename(_path),
+            "profile": _profile,
+            "profile_callsigns": _profile_calls,
+            "payloads": _payloads,
+        }
+    )
+
+
+@app.route("/export/kml")
+def flask_export_kml():
+    """Build a flight-debrief KML from a chase log."""
+    auth = _check_recovery_auth()
+    if auth is not None:
+        return auth
+
+    _requested = flask.request.args.get("log", "")
+    _path = _resolve_chase_log(_requested)
+    if _path is None:
+        if _requested:
+            return flask.jsonify({"error": "unknown log file."}), 404
+        return (
+            flask.jsonify(
+                {
+                    "error": "No chase logs found. Logging may be disabled "
+                    "(--nolog), or no flight has been recorded yet."
+                }
+            ),
+            404,
+        )
+
+    try:
+        _entries = read_chase_log(_path)
+    except Exception as e:
+        # OSError, or a decode error if the log picked up bytes that
+        # don't match the locale encoding it was written with.
+        logging.error("KML export - could not read %s: %s" % (_path, e))
+        return flask.jsonify({"error": "could not read log file."}), 500
+
+    _profile = chasemapper_config.get("selected_profile", "")
+    _geofence = geofence_store.get("profiles", {}).get(_profile)
+
+    # Payload selection. Explicit ?callsign= wins (the web client always
+    # sends it). Otherwise default to the active profile's balloons, so a
+    # bare /export/kml doesn't sweep in every other flight the APRS-IS
+    # filter happened to hear. Profiles with no APRS-IS callsigns
+    # configured - telemetry over ozimux/horus_udp, say - fall back to
+    # every payload in the log, since there's nothing to narrow by.
+    _requested_calls = [_c for _c in flask.request.args.getlist("callsign") if _c]
+    _profile_calls = _profile_balloon_callsigns(_profile)
+
+    if _requested_calls:
+        _callsigns = _requested_calls
+    elif _profile_calls:
+        _callsigns = _profile_calls
+    else:
+        _callsigns = None
+
+    _kml, _summary = kml_export.build_flight_kml(
+        _entries,
+        geofence=_geofence,
+        profile_name=_profile,
+        overlays=list(kml_overlay_settings.values()),
+        log_name=os.path.basename(_path),
+        generated=datetime.now(UTC).isoformat(timespec="seconds"),
+        callsigns=_callsigns,
+    )
+
+    if not _summary["callsigns"]:
+        # Say what the log *does* hold - most often the operator is on
+        # the wrong profile for the flight they're trying to export.
+        _present = [_p["callsign"] for _p in kml_export.summarise_payloads(_entries)]
+        _asked = ", ".join(_callsigns) if _callsigns else "any payload"
+        return (
+            flask.jsonify(
+                {
+                    "error": "No telemetry for %s in %s. Payloads in this log: %s."
+                    % (
+                        _asked,
+                        os.path.basename(_path),
+                        ", ".join(_present) if _present else "none",
+                    )
+                }
+            ),
+            404,
+        )
+
+    logging.info(
+        "KML export from %s: %d packets, %d payload(s), %d launch prediction(s), "
+        "geofence %s, %d overlay(s)."
+        % (
+            os.path.basename(_path),
+            _summary["points"],
+            len(_summary["callsigns"]),
+            _summary["predictions"],
+            "included" if _summary["geofence"] else "absent",
+            _summary["overlays"],
+        )
+    )
+
+    _filename = "chasemapper_%s.kml" % os.path.splitext(os.path.basename(_path))[0]
+    _response = flask.Response(_kml, mimetype="application/vnd.google-earth.kml+xml")
+    _response.headers["Content-Disposition"] = 'attachment; filename="%s"' % _filename
+    return _response
 
 
 def flask_emit_event(event_name="none", data={}):
