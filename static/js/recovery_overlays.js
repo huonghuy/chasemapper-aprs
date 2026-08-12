@@ -29,14 +29,13 @@
         { key: "restricted", color: "#dc2626", weight: 2, fillOpacity: 0.10 }
     ];
 
-    // Separate SVG panes keep transparent polygons clickable without a
-    // full-map Canvas renderer swallowing clicks intended for lower layers.
+    // Pane names and z-indexes come from MapPanes (see map_panes.js for why
+    // each class gets its own); the order above is the stacking order.
     var AIRSPACE_BY_KEY = {};
-    AIRSPACE.forEach(function (layer, index) {
+    AIRSPACE.forEach(function (layer) {
         var slug = layer.key.replace(/_/g, "-");
+        layer.slug = slug;
         layer.toggleId = "toggle-" + slug;
-        layer.pane = "airspace-" + slug;
-        layer.zIndex = 410 + 10 * index;
         layer.style = {
             color: layer.color,
             weight: layer.weight,
@@ -57,7 +56,6 @@
         airspaceData: {},
         airspaceLayers: {},
         parcelLayer: null,
-        parcelCanvas: null,
         searchCircle: null,
         parcelTimer: null,
         airspaceFetching: {}
@@ -161,9 +159,8 @@
     }
 
     function ensureAirspacePanes() {
-        AIRSPACE.forEach(function (config) {
-            var pane = state.map.getPane(config.pane) || state.map.createPane(config.pane);
-            pane.style.zIndex = String(config.zIndex);
+        AIRSPACE.forEach(function (config, index) {
+            config.pane = MapPanes.airspace(state.map, config.slug, index);
         });
     }
 
@@ -278,7 +275,8 @@
         if (state.searchCircle) state.map.removeLayer(state.searchCircle);
         var radiusMeters = getRadiusKm() * 1000.0;
         state.searchCircle = L.circle(state.landing, Object.assign(
-            { radius: radiusMeters }, SEARCH_CIRCLE_STYLE
+            { radius: radiusMeters, pane: MapPanes.parcels(state.map) },
+            SEARCH_CIRCLE_STYLE
         )).addTo(state.map);
     }
 
@@ -342,9 +340,13 @@
                 if (state.parcelLayer) {
                     state.map.removeLayer(state.parcelLayer);
                 }
-                if (!state.parcelCanvas) state.parcelCanvas = L.canvas();
+                // SVG rather than a Canvas renderer: parcels are the topmost
+                // vector layer, and one viewport-sized canvas hit-tests as
+                // opaque, so it would eat every click meant for the geofence
+                // and airspace panes below. The server caps the feature count,
+                // which keeps the path count bounded.
                 state.parcelLayer = L.geoJSON(data, {
-                    renderer: state.parcelCanvas,
+                    pane: MapPanes.parcels(state.map),
                     style: PARCEL_STYLE,
                     onEachFeature: function (feature, lyr) {
                         // Built on open, not up front - a result can run to

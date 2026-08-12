@@ -53,7 +53,7 @@ function kmlFeatureStyle(feature){
 }
 
 
-function kmlPointToLayer(feature, latlng){
+function kmlPointToLayer(feature, latlng, pane){
     // Draw KML points as circle markers so they can't be confused with the
     // balloon and chase-car markers. Colour comes from the simplestyle
     // ExtendedData keys, as omnivore does not parse KML IconStyle.
@@ -61,6 +61,7 @@ function kmlPointToLayer(feature, latlng){
     var _colour = _props["marker-color"] || "#3388ff";
 
     return L.circleMarker(latlng, {
+        pane: pane,
         radius: (_props["marker-size"] === "large") ? 7 : 4,
         color: _colour,
         weight: 2,
@@ -110,12 +111,20 @@ function loadConfiguredKmlOverlays(config, map){
         return _overlay_layers;
     }
 
+    // Configured KML is backdrop: the eclipse path is a swath the width of the
+    // map, and a click landing on it rather than on the airspace, geofence or
+    // parcel underneath is never what the operator meant.
+    var _pane = MapPanes.kml(map);
+
     for (var i = 0, len = config.kml_overlays.length; i < len; i++) {
         var _overlay = config.kml_overlays[i];
         var _layer = L.geoJson(null, {
+            pane: _pane,
             onEachFeature: bindKmlPopup,
             style: kmlFeatureStyle,
-            pointToLayer: kmlPointToLayer
+            pointToLayer: function(feature, latlng){
+                return kmlPointToLayer(feature, latlng, _pane);
+            }
         });
 
         _layer._kml_url = "/overlays/kml/" + encodeURIComponent(_overlay.id);

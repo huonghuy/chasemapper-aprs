@@ -209,6 +209,14 @@ html, body {
     display: none;
 }
 
+/* While a geofence is being drawn every click has to become a vertex, but an
+   interactive path (airspace, parcel, KML) takes the click before the map sees
+   it. Suspend hit-testing across the vector stack for the duration; the
+   draggable vertex markers are not paths, so they stay grabbable. */
+.map-draw-mode .leaflet-pane > svg path.leaflet-interactive {
+    pointer-events: none;
+}
+
 /* Mobile: hide lat/lon from telem table (visible on map) and speed from summary table */
 @media (max-width: 767px) {
     #telem_table .tabulator-col[tabulator-field="lat"],

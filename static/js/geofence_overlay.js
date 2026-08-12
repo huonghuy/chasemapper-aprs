@@ -121,7 +121,10 @@
             );
             return;
         }
-        var style = STYLE[gf.remain] || STYLE.inside;
+        var style = Object.assign(
+            { pane: MapPanes.geofence(state.map) },
+            STYLE[gf.remain] || STYLE.inside
+        );
         state.layer = L.polygon(gf.polygon, style)
             .bindPopup(popupHtml(profile, gf))
             .addTo(state.map);
@@ -309,7 +312,9 @@
         if (!state.drawPreview) {
             // <2 vertices: nothing to draw yet.
             if (latlngs.length < 2) return;
-            state.drawPreview = L.polyline(latlngs, DRAW_PREVIEW_STYLE).addTo(state.map);
+            state.drawPreview = L.polyline(latlngs, Object.assign(
+                { pane: MapPanes.geofence(state.map) }, DRAW_PREVIEW_STYLE
+            )).addTo(state.map);
         } else {
             state.drawPreview.setLatLngs(latlngs);
         }
@@ -381,6 +386,11 @@
         state.savedCursor = container.style.cursor;
         container.style.cursor = "crosshair";
 
+        // Airspace and parcel polygons blanket the area a geofence gets drawn
+        // over, and a path that takes a click never lets the map see it. Stand
+        // the whole vector stack down until the draw finishes.
+        MapPanes.setDrawMode(state.map, true);
+
         state.clickHandler = function (e) { addDrawVertex(e.latlng); };
         state.map.on("click", state.clickHandler);
         refreshDrawStatus();
@@ -403,6 +413,7 @@
         var container = state.map.getContainer();
         container.style.cursor = state.savedCursor || "";
         state.savedCursor = null;
+        MapPanes.setDrawMode(state.map, false);
         state.drawing = false;
     }
 

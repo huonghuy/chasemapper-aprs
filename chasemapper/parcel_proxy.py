@@ -194,9 +194,13 @@ def _parse_catastro_gml(xml_bytes):
                 {"type": "Polygon", "coordinates": rings},
                 ref=ref.strip(),
                 area_m2=area,
+                # OVCListaBienes.aspx rejects bare GET deep-links with a generic
+                # "Sistema no disponible" error - it expects a session built by
+                # its own search form, not a bookmarkable URL. The map viewer
+                # accepts RC directly without that check.
                 info_url=(
-                    "https://www1.sedecatastro.gob.es/CYCBienInmueble/"
-                    "OVCListaBienes.aspx?RC=" + ref.strip()
+                    "https://www1.sedecatastro.gob.es/Cartografia/mapa.aspx?RC="
+                    + ref.strip()
                 )
                 if ref.strip()
                 else "",
