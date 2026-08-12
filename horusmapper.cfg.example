@@ -57,6 +57,11 @@ aprsis_balloon_callsigns = KC1MHU-11
 aprsis_car_callsigns = KC1RBW-2
 aprsis_active_car_callsign = KC1RBW-2
 
+# SPOT trackers flown under this profile. Format is "callsign:ENV_VAR" pairs,
+# see the [spot] section below. Only polled/shown while this profile is
+# selected - leave empty for a profile that flies no SPOT tracker.
+spot_feeds = SPOT-primary:SPOT_FEED_PRIMARY
+
 # Other profiles can be defined in sections like the following:
 [profile_2]
 profile_name = UB Secondary
@@ -72,6 +77,9 @@ online_tracker = sondehubamateur
 aprsis_balloon_callsigns = KC1MHU-12
 aprsis_car_callsigns = KC1RBW-2
 aprsis_active_car_callsign = KC1RBW-2
+
+# SPOT trackers flown under this profile.
+spot_feeds = SPOT-secondary:SPOT_FEED_SECONDARY
 
 [gpsd]
 # GPSD Host/Port - Only used if selected in a telemetry profile above.
@@ -111,12 +119,18 @@ spot_enabled = True
 # 300 (5 min) is the recommended floor.
 spot_poll_interval = 300
 
-# Comma-separated list of "callsign:ENV_VAR" pairs. The callsign is what
-# appears on the map; the env var holds the SPOT shared-page Feed ID.
+# Which trackers get polled is set per-profile, via spot_feeds in each
+# [profile_N] section above - only the selected profile's SPOT traces are
+# polled and shown on the map.
+#
+# Each entry is a "callsign:ENV_VAR" pair, comma-separated. The callsign is
+# what appears on the map; the env var holds the SPOT shared-page Feed ID.
 # Set the env vars in the process environment (shell export,
 # systemd EnvironmentFile=, or docker run -e), same pattern as
 # RECOVERY_API_KEY. Leaving an env var unset skips that tracker with a warning.
-spot_feeds = SPOT-primary:SPOT_FEED_PRIMARY, SPOT-secondary:SPOT_FEED_SECONDARY
+#
+# A spot_feeds list here (deprecated) applies to any profile that doesn't
+# define its own.
 
 
 # Map Settings

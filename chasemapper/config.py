@@ -77,6 +77,26 @@ default_config = {
 }
 
 
+def parse_spot_feeds(raw):
+    """Parse a 'callsign:ENV_VAR, callsign:ENV_VAR' string.
+
+    Returns a list of (callsign, env_var_name) tuples. Malformed entries
+    are skipped rather than failing the whole config read.
+    """
+    _feeds = []
+    for _pair in raw.split(","):
+        _pair = _pair.strip()
+        if not _pair or ":" not in _pair:
+            continue
+        _callsign, _env_var = _pair.split(":", 1)
+        _callsign = _callsign.strip()
+        _env_var = _env_var.strip()
+        if _callsign and _env_var:
+            _feeds.append((_callsign, _env_var))
+
+    return _feeds
+
+
 def parse_config_file(filename):
     """ Parse a Configuration File """
 
@@ -306,23 +326,25 @@ def parse_config_file(filename):
 
     # SPOT GPS tracker public feeds. Feed IDs are read from env vars
     # (see [spot] section in horusmapper.cfg.example).
+    # [spot] holds the global on/off switch and poll rate - *which* trackers
+    # are polled is set per-profile, via spot_feeds in each [profile_N]
+    # section, so switching profiles swaps the SPOT traces on the map.
     chase_config["spot_enabled"] = False
     chase_config["spot_poll_interval"] = 300
     chase_config["spot_feeds"] = []
     try:
-        chase_config["spot_enabled"] = config.getboolean("spot", "spot_enabled")
-        chase_config["spot_poll_interval"] = config.getint("spot", "spot_poll_interval")
-        # spot_feeds format: "callsign:ENV_VAR, callsign:ENV_VAR, ..."
-        raw = config.get("spot", "spot_feeds")
-        for pair in raw.split(","):
-            pair = pair.strip()
-            if not pair or ":" not in pair:
-                continue
-            cs, env = pair.split(":", 1)
-            cs = cs.strip()
-            env = env.strip()
-            if cs and env:
-                chase_config["spot_feeds"].append((cs, env))
+        chase_config["spot_enabled"] = config.getboolean(
+            "spot", "spot_enabled", fallback=False
+        )
+        chase_config["spot_poll_interval"] = config.getint(
+            "spot", "spot_poll_interval", fallback=300
+        )
+        # Legacy global feed list, kept for configs written before feeds
+        # became per-profile. Used only by profiles with no spot_feeds of
+        # their own.
+        chase_config["spot_feeds"] = parse_spot_feeds(
+            config.get("spot", "spot_feeds", fallback="")
+        )
     except Exception:
         logging.info("Missing or incomplete [spot] config section, SPOT disabled.")
         chase_config["spot_enabled"] = False
@@ -392,6 +414,17 @@ def parse_config_file(filename):
                     _profile_aprsis_cars[0] if _profile_aprsis_cars else ""
                 )
 
+            # SPOT trackers flown under this profile, in the same
+            # "callsign:ENV_VAR" format as the legacy [spot] list. A profile
+            # with no spot_feeds key falls back to that global list; setting
+            # it to an empty value opts the profile out of SPOT entirely.
+            if config.has_option(_profile_section, "spot_feeds"):
+                _profile_spot_feeds = parse_spot_feeds(
+                    config.get(_profile_section, "spot_feeds")
+                )
+            else:
+                _profile_spot_feeds = list(chase_config["spot_feeds"])
+
             chase_config["profiles"][_profile_name] = {
                 "name": _profile_name,
                 "telemetry_source_type": _profile_telem_source_type,
@@ -402,6 +435,7 @@ def parse_config_file(filename):
                 "aprsis_balloon_callsigns": _profile_aprsis_balloons,
                 "aprsis_car_callsigns": _profile_aprsis_cars,
                 "aprsis_active_car_callsign": _profile_aprsis_active,
+                "spot_feeds": _profile_spot_feeds,
             }
             if _default_profile == i:
                 chase_config["selected_profile"] = _profile_name

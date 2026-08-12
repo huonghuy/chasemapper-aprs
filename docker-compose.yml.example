@@ -1,18 +1,20 @@
 services:
   chasemapper:
     container_name: chasemapper
-    image: ghcr.io/huonghuy/chasemapper-aprs:Spain
+    image: ghcr.io/huonghuy/chasemapper-aprs:UB-Spain
     # To build locally instead of pulling, comment `image:` above and uncomment:
-    # build: .
+    #build: .
     restart: always
     tty: true
     # network_mode: host lets the container receive UDP broadcasts from
     # telemetry decoders (Horus-GUI, lora_gateway, etc.) on the host network.
     # On Windows/Mac (or if you don't need UDP ingest), remove this line and
     # use a `ports:` mapping instead — see commented block below.
-    network_mode: host
-    # ports:
-    #   - "5001:5001"
+    #network_mode: host
+# network_mode: host
+    ports:
+      - "5002:5002"
+      - "55673:55673/udp"
     env_file:
       - .env
     volumes:

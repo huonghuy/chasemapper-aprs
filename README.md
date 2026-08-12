@@ -256,9 +256,13 @@ gitignored):
 | `RECOVERY_API_KEY`   | Optional   | Auth token for FAA airspace / TFR / MD parcel |
 |                      |            | overlays. Set only if running behind          |
 |                      |            | Cloudflare with X-Recovery-Key injection.     |
-| `SPOT_FEED_COMMAND`  | Optional   | SPOT public-feed ID for the "command"         |
+| `SPOT_FEED_PRIMARY`  | Optional   | SPOT public-feed ID for the primary tracker.  |
+| `SPOT_FEED_SECONDARY`| Optional   | SPOT public-feed ID for the secondary         |
 |                      |            | tracker.                                      |
-| `SPOT_FEED_HAPL`     | Optional   | SPOT public-feed ID for the "HAPL" tracker.   |
+
+The env var names are whatever the `spot_feeds` lines in
+`horusmapper.cfg` refer to — the two above are what the shipped config
+uses.
 
 Unset variables disable the corresponding feature — chasemapper logs a
 warning and continues.
@@ -271,9 +275,26 @@ warning and continues.
 4. Paste each into `.env`:
 ```bash
        RECOVERY_API_KEY=...
-       SPOT_FEED_COMMAND=XXXXXXXXXXXXXXXXXXXX
-       SPOT_FEED_HAPL=YYYYYYYYYYYYYYYYYYYY
+       SPOT_FEED_PRIMARY=XXXXXXXXXXXXXXXXXXXX
+       SPOT_FEED_SECONDARY=YYYYYYYYYYYYYYYYYYYY
 ```
+### Assigning trackers to profiles
+
+SPOT trackers belong to a telemetry profile. List them with a
+`spot_feeds` line in that profile's `[profile_N]` section of
+`horusmapper.cfg`:
+```ini
+    [profile_1]
+    profile_name = UB Primary
+    spot_feeds = SPOT-primary:SPOT_FEED_PRIMARY
+
+    [profile_2]
+    profile_name = UB Secondary
+    spot_feeds = SPOT-secondary:SPOT_FEED_SECONDARY
+```
+Only the selected profile's trackers are polled and drawn — switching
+profiles in the web GUI swaps the SPOT traces on the map. The global
+on/off switch and poll interval stay in `[spot]`.
 ### Wiring it into docker-compose
 
 Add `env_file:` to the chasemapper service in your `docker-compose.yml`:
@@ -292,9 +313,9 @@ Then start as usual:
 
     docker compose logs chasemapper | grep SPOT
 
-You should see:
+You should see (one feed per tracker listed in the selected profile):
 
-    SPOT: started listener for 2 feed(s), poll interval 300s
+    SPOT: started listener for 1 feed(s), poll interval 300s
 
 If you see `SPOT: <callsign> skipped — env var ... is not set`, the
 variable isn't reaching the container — check `env_file:` is set on the

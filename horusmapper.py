@@ -568,6 +568,32 @@ def _profile_balloon_callsigns(profile_name):
     return list(_profile.get("aprsis_balloon_callsigns", []) or [])
 
 
+def _profile_spot_callsigns(profile_name):
+    """SPOT tracker callsigns configured for a profile.
+
+    Note the feeds round-trip through the web client as JSON, so these
+    pairs can be lists as well as tuples.
+    """
+    _profile = chasemapper_config.get("profiles", {}).get(profile_name, {})
+    return [_feed[0] for _feed in (_profile.get("spot_feeds", []) or [])]
+
+
+def _all_spot_callsigns():
+    """Every SPOT callsign across all profiles, plus the legacy global list.
+
+    SPOT feeds are per-profile, but a track received under one profile can
+    still be in the data store after switching to another, so anything that
+    needs to recognise a SPOT trace has to consider all of them.
+    """
+    _callsigns = {
+        _feed[0] for _feed in (chasemapper_config.get("spot_feeds", []) or [])
+    }
+    for _profile_name in chasemapper_config.get("profiles", {}):
+        _callsigns.update(_profile_spot_callsigns(_profile_name))
+
+    return _callsigns
+
+
 @app.route("/export/flights")
 def flask_export_flights():
     """List the chase logs available to export."""
@@ -912,6 +938,20 @@ def handle_new_payload_position(data, log_position=True):
     _callsign = data["callsign"]
 
     _short_time = _time_dt.strftime("%H:%M:%S")
+
+    # SPOT trackers belong to a single telemetry profile. Drop positions for
+    # any other profile's tracker - a poll already in flight when the profile
+    # changed, or a last-position reload from a log written under a different
+    # profile, would otherwise put a foreign trace back on the map.
+    if (_callsign in _all_spot_callsigns()) and (
+        _callsign
+        not in _profile_spot_callsigns(chasemapper_config.get("selected_profile", ""))
+    ):
+        logging.debug(
+            "Ignoring position for SPOT tracker %s - not part of the selected profile."
+            % _callsign
+        )
+        return
 
     # Multiple receivers on the same network will each broadcast their own copy of
     # a decoded packet, so the same telemetry (or an older, delayed frame) can arrive
@@ -1300,9 +1340,7 @@ def run_prediction():
     # SPOT trackers are display-only cross-reference traces. Their altitude
     # is noisy / often 0 and would produce nonsense descent-rate and landing
     # predictions, so skip them in the predictor loop.
-    _spot_callsigns = {
-        cs for cs, _env in chasemapper_config.get("spot_feeds", [])
-    }
+    _spot_callsigns = _all_spot_callsigns()
 
     for _payload in _payload_list:
         if _payload in _spot_callsigns:
@@ -2130,15 +2168,59 @@ def start_listeners(profile):
             # No Car position.
             logging.info("No car position data source.")
 
-    # SPOT GPS tracker feeds — global, independent of profile selection.
-    if chasemapper_config.get("spot_enabled") and chasemapper_config.get("spot_feeds"):
-        _spot = SPOTListener(
-            feeds=chasemapper_config["spot_feeds"],
-            summary_callback=udp_listener_summary_callback,
-            poll_interval=chasemapper_config.get("spot_poll_interval", 300),
-        )
-        _spot.start()
-        data_listeners.append(_spot)
+    # SPOT GPS tracker feeds. Each profile lists its own trackers, so
+    # switching profiles swaps which SPOT traces are polled.
+    _spot_feeds = profile.get("spot_feeds", []) or []
+    if chasemapper_config.get("spot_enabled"):
+        if _spot_feeds:
+            _spot = SPOTListener(
+                feeds=_spot_feeds,
+                summary_callback=udp_listener_summary_callback,
+                poll_interval=chasemapper_config.get("spot_poll_interval", 300),
+            )
+            _spot.start()
+            data_listeners.append(_spot)
+        else:
+            logging.info(
+                "SPOT: no feeds configured for profile '%s'." % profile.get("name", "?")
+            )
+
+
+def _remove_foreign_spot_payloads():
+    """Drop SPOT tracks belonging to profiles other than the selected one.
+
+    SPOT feeds are per-profile, so a trace picked up under one profile would
+    otherwise sit on the map after switching away from it.
+    """
+    global current_payloads, current_payload_tracks
+
+    _profile_name = chasemapper_config.get("selected_profile", "")
+    _keep = set(_profile_spot_callsigns(_profile_name))
+    _spot_callsigns = _all_spot_callsigns()
+    _stale = [
+        _call
+        for _call in list(current_payloads.keys())
+        if (_call in _spot_callsigns) and (_call not in _keep)
+    ]
+
+    if len(_stale) == 0:
+        return
+
+    # Don't pull data out from under a running prediction cycle.
+    while predictor_semaphore:
+        time.sleep(0.1)
+
+    for _call in _stale:
+        current_payloads.pop(_call, None)
+        current_payload_tracks.pop(_call, None)
+
+    logging.info(
+        "Removed SPOT tracker(s) %s - not flown under profile '%s'."
+        % (", ".join(_stale), _profile_name)
+    )
+
+    # Tell the clients to take them off the map too.
+    flask_emit_event("payload_removed", {"callsigns": _stale})
 
 
 @socketio.on("profile_change", namespace="/chasemapper")
@@ -2152,6 +2234,7 @@ def profile_change(data):
 
     # Change the profile, and restart the listeners.
     chasemapper_config["selected_profile"] = data
+    _remove_foreign_spot_payloads()
     start_listeners(
         chasemapper_config["profiles"][chasemapper_config["selected_profile"]]
     )
