@@ -34,5 +34,6 @@ wheels/
 .rtk/
 .codegraph/
 .codex/
+.claude/
 .agents/
 CLAUDE.md
