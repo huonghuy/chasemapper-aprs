@@ -46,3 +46,6 @@ jobs:
 
       - name: Byte-compile all modules
         run: python -m compileall -q chasemapper horusmapper.py log_parse.py log_playback.py
+
+      - name: Frontend regression checks
+        run: node --test tests/test_frontend.cjs

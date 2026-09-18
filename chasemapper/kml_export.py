@@ -14,11 +14,11 @@ Earth for the debrief:
 
   * the first recorded predicted path - the *first* prediction run logged
     for each payload - plus its predicted burst and landing points,
-  * the path actually flown, rebuilt from the logged APRS telemetry,
+  * the path actually flown, rebuilt from the logged telemetry,
     with launch / max-altitude / last-packet placemarks,
   * the active profile's geofence, drawn as a ground footprint and a
     wall rising to its ceiling altitude,
-  * every configured KML overlay (the eclipse path of totality),
+  * optional currently configured KML overlays,
     inlined so the export is a single self-contained file.
 
 Flight data comes from the chase log (log_files/*.log - one JSON object
@@ -258,7 +258,7 @@ def collect_flight_data(log_entries, callsigns=None):
         elif _type == LOG_PREDICTION:
             slot = _slot(_call)
             if slot["prediction"] is not None:
-                # Already have the launch run; later runs are the
+                # Already have the first recorded run; later runs are the
                 # predictor converging, which this export doesn't carry.
                 continue
             path = [_triple(p) for p in (entry.get("pred_path") or [])]
@@ -313,7 +313,7 @@ def _flight_folder(callsign, data):
         "Flown path (%d packets)" % len(points),
         "actualPath",
         points,
-        "Reconstructed from logged APRS telemetry.",
+        "Reconstructed from logged telemetry.",
     )
 
     first = track[0]
@@ -346,7 +346,7 @@ def _flight_folder(callsign, data):
         "telemetry received." % (last[0], last[3]),
     )
 
-    body += _folder("Actual path (APRS)", actual, open_=True)
+    body += _folder("Actual path", actual, open_=True)
 
     prediction = data["prediction"]
     if prediction:

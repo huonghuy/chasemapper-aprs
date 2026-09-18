@@ -216,7 +216,7 @@ class BuildFlightKmlTests(unittest.TestCase):
         root = parse(kml)
         names = folder_names(root)
         self.assertIn("Flight - KC1RBW-11", names)
-        self.assertIn("Actual path (APRS)", names)
+        self.assertIn("Actual path", names)
         self.assertIn("First recorded prediction", names)
         self.assertIn("Current geofence - Command", names)
         self.assertIn("Current overlay - Eclipse Path", names)

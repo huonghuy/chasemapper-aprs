@@ -1,0 +1,48 @@
+<!doctype html><meta charset="utf-8"><title>Recovery regression checks</title>
+<link rel="stylesheet" href="/static/css/leaflet.css"><link rel="stylesheet" href="/static/css/chasemapper.css">
+<style>body{margin:10px;font:16px sans-serif}#map{position:relative;width:800px;height:420px}#results{white-space:pre-wrap}label{margin-right:8px}</style>
+<h1>Recovery regression checks</h1><pre id="results">Running…</pre>
+<button id="geofence-draw">Draw geofence</button><button id="geofence-finish">Finish</button><button id="geofence-cancel-draw">Cancel drawing</button><div id="geofence-status"></div><span id="click-result">Click map center to open the parcel popup.</span>
+<div id="map"></div>
+<label><input id="toggle-airspace" type="checkbox">Airspace</label>
+<label><input id="toggle-class-b" type="checkbox">B</label><input id="toggle-class-c" type="checkbox"><input id="toggle-class-d" type="checkbox"><input id="toggle-class-e" type="checkbox"><input id="toggle-sua" type="checkbox"><input id="toggle-tfr" type="checkbox">
+<button id="airspace-refresh-btn">Refresh</button><div id="airspace-status"></div>
+<label><input id="toggle-parcels" type="checkbox">Parcels</label><input id="parcel-radius" value="0.5"><span id="parcel-radius-val"></span><div id="parcel-status"></div>
+<script src="/static/js/leaflet.js"></script><script src="/static/js/map_panes.js"></script><script src="/static/js/overlays.js"></script>
+<script>
+let pending = [];
+window.fetch = function(url) {return new Promise((resolve, reject) => pending.push({url,resolve,reject}));};
+</script>
+<script src="/static/js/recovery_overlays.js"></script><script src="/static/js/geofence_overlay.js"></script>
+<script>var chase_config={selected_profile:"Test",profiles:{Test:{}}};</script>
+<script>
+window.addEventListener('load', async function () {
+ const out=document.getElementById('results');out.textContent='';
+ function check(ok, text){out.textContent+=(ok?'PASS ':'FAIL ')+text+'\n';if(!ok)throw Error(text);}
+ const wait=ms=>new Promise(r=>setTimeout(r,ms));
+ const map=L.map('map').setView([39,-76],12);RecoveryOverlays.init(map);
+ const polygon=(owner)=>({type:'FeatureCollection',features:[{type:'Feature',properties:{OWNNAME1:owner,PREMISEADD:'Test address'},geometry:{type:'Polygon',coordinates:[[[-76.01,38.99],[-75.99,38.99],[-75.99,39.01],[-76.01,39.01],[-76.01,38.99]]]}}]});
+ try {
+  document.getElementById('toggle-parcels').checked=true;
+  RecoveryOverlays.updateLandingPoint(39,-76);await wait(450);
+  check(pending.length===1,'Initial parcel request');
+  const first=pending.shift();RecoveryOverlays.updateLandingPoint(39.005,-76);await wait(450);
+  const second=pending.shift();second.resolve({json:async()=>polygon('<b>Latest owner</b>')});await wait(20);
+  first.resolve({json:async()=>polygon('STALE')});await wait(20);
+  const state=RecoveryOverlays._state();
+  check(state.parcelLayer.toGeoJSON().features[0].properties.OWNNAME1==='<b>Latest owner</b>','Superseded parcel response discarded');
+  check(typeof state.parcelLayer.getLayers()[0].getPopup().getContent()==='function','Parcel popup built on demand');
+  RecoveryOverlays.updateLandingPoint(39.00501,-76);await wait(450);check(pending.length===0,'Small landing motion reuses successful parcel result');
+  document.getElementById('parcel-radius').value='1';document.getElementById('parcel-radius').dispatchEvent(new Event('input'));await wait(450);
+  check(pending.length===1,'Radius change refetches');pending.shift().reject(Error('test failure'));await wait(20);
+  RecoveryOverlays.updateLandingPoint(39.00501,-76);await wait(450);check(pending.length===1,'Failed parcel request can retry');pending.shift().resolve({json:async()=>polygon('<b>Latest owner</b>')});await wait(20);
+  let calls=0;window.omnivore={kml(url,unused,layer){calls++;setTimeout(()=>layer.fire(calls===1?'error':'ready'),0);return layer;}};
+  const overlays=loadConfiguredKmlOverlays({kml_overlays:[{id:'1',name:'test',visible:false}]},map);const layer=overlays.test;
+  check(calls===0,'Hidden KML loads lazily');map.fire('overlayadd',{layer});await wait(20);check(!layer._kml_loaded,'Failed KML is not marked loaded');map.fire('overlayadd',{layer});await wait(20);check(calls===2&&layer._kml_loaded,'KML retry succeeds');
+  L.polygon([[38.98,-76.02],[38.98,-75.98],[39.02,-75.98],[39.02,-76.02]],{pane:MapPanes.airspace(map,'class-b',1)}).bindPopup('Airspace popup').addTo(map);
+  L.polygon([[38.985,-76.015],[38.985,-75.985],[39.015,-75.985],[39.015,-76.015]],{pane:MapPanes.geofence(map),color:'green'}).bindPopup('Geofence popup').addTo(map);
+  GeofenceOverlay.init(map);GeofenceOverlay.onConfig(chase_config);
+  map.on('popupopen',()=>document.getElementById('click-result').textContent='PASS overlapping layer popup opened');
+ }catch(e){out.textContent+='ERROR '+e.message;}
+});
+</script>

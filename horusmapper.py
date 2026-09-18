@@ -1300,7 +1300,10 @@ def predictorThread():
     logging.info("Predictor loop started.")
 
     while predictor_thread_running:
-        run_prediction()
+        try:
+            run_prediction()
+        except Exception:
+            logging.exception("Prediction failed; retrying on the next cycle")
         for i in range(int(chasemapper_config["pred_update_rate"])):
             time.sleep(1)
             if predictor_thread_running == False:

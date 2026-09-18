@@ -335,8 +335,8 @@ def parse_config_file(filename):
     chase_config["spot_poll_interval"] = 300
     chase_config["spot_feeds"] = []
     try:
-        chase_config["spot_enabled"] = config.getboolean("spot", "spot_enabled")
-        chase_config["spot_poll_interval"] = config.getint("spot", "spot_poll_interval")
+        chase_config["spot_enabled"] = config.getboolean("spot", "spot_enabled", fallback=False)
+        chase_config["spot_poll_interval"] = config.getint("spot", "spot_poll_interval", fallback=300)
         chase_config["spot_feeds"] = parse_spot_feeds(
             config.get("spot", "spot_feeds", fallback="")
         )

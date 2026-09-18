@@ -14,7 +14,9 @@ var FlightExport = (function(){
     var state = {
         logs: [],
         payloads: [],
-        busy: false
+        busy: false,
+        payloadGeneration: 0,
+        payloadsLoading: false
     };
 
     function el(id){
@@ -185,6 +187,9 @@ var FlightExport = (function(){
     }
 
     function loadPayloads(){
+        var generation = ++state.payloadGeneration;
+        state.payloads = [];
+        state.payloadsLoading = true;
         var _select = el("exportLogSelect");
         var _container = el("exportPayloads");
         var _log = (_select && _select.value) || "";
@@ -208,8 +213,13 @@ var FlightExport = (function(){
                 }
                 return response.json();
             })
-            .then(renderPayloads)
+            .then(function(data){
+                if (generation !== state.payloadGeneration) return;
+                state.payloadsLoading = false;
+                renderPayloads(data);
+            })
             .catch(function(e){
+                if (generation !== state.payloadGeneration) return;
                 console.log("Could not read payload list", e);
                 _container.textContent = "Could not read this log.";
                 _container.style.color = "#b91c1c";
@@ -247,7 +257,7 @@ var FlightExport = (function(){
     }
 
     function download(){
-        if (state.busy){
+        if (state.busy || state.payloadsLoading){
             return;
         }
 

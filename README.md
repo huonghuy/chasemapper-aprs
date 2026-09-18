@@ -424,3 +424,27 @@ Update both places at once:
 
 There's no key list or revocation — the server only knows one value at
 a time.
+### Flight KML export and profile SPOT feeds
+
+The Settings pane's **Flight Export** controls list saved chase logs and their
+payloads. Downloads include flown tracks and each payload's **first recorded
+prediction**. That prediction may have been recorded after launch or after a
+restart. The current profile's balloon callsigns are selected when present.
+
+**Include current geofence** and **Include current overlays** are optional and
+default off. These use configuration at export time; they are not a record of the
+configuration during the flight. Export routes (`/export/flights`,
+`/export/payloads`, `/export/kml`) use the same `RECOVERY_API_KEY` authentication as
+recovery overlays. API clients opt into context with `include_geofence=1` and/or
+`include_overlays=1`, and may repeat `callsign=` to select payloads.
+
+Each `[profile_N]` may set `spot_feeds = TRACKER:FEED_ENV_VAR, ...`. Omitting the
+key inherits the global `[spot]` feeds; an explicitly empty `spot_feeds =`
+disables feeds for that profile. Switching profiles removes inactive tracker
+traces from connected clients and rejects callbacks from retired listener
+sessions. SPOT tracks remain display-only and do not run predictions.
+
+Relative configured KML paths resolve against the application directory. Hidden
+KML overlays load when first enabled; toggling an overlay off and on retries a
+failed load. `ascent_rate_averaging` accepts fractional windows of at least 2;
+invalid or non-finite configuration values use the default of 10.
