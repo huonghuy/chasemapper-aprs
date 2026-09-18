@@ -116,9 +116,27 @@ function updateDurationHours(inputId, spanId){
     span.textContent = "(" + h.toFixed(2) + " h)";
 }
 
+// The telemetry profile this browser is viewing. Each viewer picks their own,
+// so it is kept locally rather than taken from the server's settings.
+var VIEWER_PROFILE_KEY = "chasemapper.viewer_profile";
+var viewer_profile = null;
+try { viewer_profile = localStorage.getItem(VIEWER_PROFILE_KEY); } catch (e) {}
+
+function setViewerProfile(profile){
+    viewer_profile = profile;
+    chase_config.selected_profile = profile;
+    try { localStorage.setItem(VIEWER_PROFILE_KEY, profile); } catch (e) {}
+}
+
 function serverSettingsUpdate(data){
     // Accept a json blob of settings data from the client, and update our local store.
     chase_config = data;
+    // The server's selected_profile is only the default for new viewers.
+    if (viewer_profile && chase_config.profiles && chase_config.profiles.hasOwnProperty(viewer_profile)){
+        chase_config.selected_profile = viewer_profile;
+    } else {
+        viewer_profile = chase_config.selected_profile;
+    }
     // Update a few fields based on this data.
     $("#predictorModelValue").text(chase_config.pred_model);
     $('#burstAlt').val(chase_config.pred_burst.toFixed(0));

@@ -259,8 +259,11 @@
             // socketio message.
             $("#profileSelect").change(function(){
                 clearLaunchPreview({reason: "profile_change"});
-                // On a profile selection change, emit a message to the client.
+                // Only this browser's view changes: remember the choice, move
+                // to that profile's server room, and reload its payloads.
+                setViewerProfile(this.value);
                 socket.emit('profile_change', this.value);
+                loadTelemetryArchive(true);
 
                 // Remove chase car if switching to a profile which does not have live position updates.
                 _profile = this.value;
@@ -614,22 +617,37 @@
             }
 
 
-            // Grab the recent archive of telemetry data
-            // This should only ever be run once - on page load.
-            $.ajax({
-                  url: "/get_telemetry_archive",
-                  dataType: 'json',
-                  async: true,
-                  success: function(data) {
-
-                    for (callsign in data){
-                        add_new_balloon(data[callsign]);
-                    }
-                    // Update telemetry table
-                    updateTelemetryTable();
-                    initial_load_complete = true;
-                  }
-            });
+            // Grab the recent archive of telemetry data for the profile this
+            // browser is viewing. Run on page load, and again (replacing what
+            // is on the map) when the viewer switches profile.
+            function loadTelemetryArchive(replace){
+                var _profile = chase_config.selected_profile;
+                $.ajax({
+                      url: "/get_telemetry_archive?profile=" + encodeURIComponent(_profile || ""),
+                      dataType: 'json',
+                      async: true,
+                      success: function(data) {
+                        // Ignore a stale reply if the viewer has switched again.
+                        if (chase_config.selected_profile !== _profile){
+                            return;
+                        }
+                        if (replace){
+                            Object.keys(balloon_positions).forEach(function(_callsign){
+                                removeBalloon(_callsign);
+                            });
+                            $('#time_to_landing').text("");
+                        }
+                        for (callsign in data){
+                            add_new_balloon(data[callsign]);
+                        }
+                        // Update telemetry table
+                        updateTelemetryTable();
+                        updateSummaryDisplay();
+                        initial_load_complete = true;
+                      }
+                });
+            }
+            loadTelemetryArchive(false);
 
             // Initialise bearings
             initialiseBearings();
@@ -782,6 +800,8 @@
 
             // Tell the server we are connected and ready for data.
             socket.on('connect', function() {
+                // Join this browser's profile (again, after a reconnect).
+                socket.emit('profile_change', chase_config.selected_profile);
                 socket.emit('client_connected', {data: 'I\'m connected!'});
                 // This will cause the server to emit a few messages telling us to fetch data.
             });

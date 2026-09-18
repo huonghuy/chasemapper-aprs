@@ -19,7 +19,7 @@ import logging
 import math
 import warnings
 import flask
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, emit, join_room, leave_room
 import os.path
 import pytz
 import time
@@ -173,7 +173,17 @@ def split_kml_overlay_settings(overlays):
 
 @app.route("/get_telemetry_archive")
 def flask_get_telemetry_archive():
-    return json.dumps(current_payloads)
+    # A viewer only gets the payloads for the profile it is looking at.
+    _profile = flask.request.args.get("profile")
+    if not _profile:
+        return json.dumps(current_payloads)
+    return json.dumps(
+        {
+            _call: _payload
+            for _call, _payload in list(current_payloads.items())
+            if _profile in _payload.get("profiles", [])
+        }
+    )
 
 
 @app.route("/get_config")
@@ -183,7 +193,7 @@ def flask_get_config():
 
 @app.route("/get_aprsis_state")
 def flask_get_aprsis_state():
-    return json.dumps(_aprsis_state())
+    return json.dumps(_aprsis_state(_request_profile()))
 
 
 @app.route("/get_bearings")
@@ -545,19 +555,82 @@ def _profile_balloon_callsigns(profile_name):
     return list(_profile.get("aprsis_balloon_callsigns", []) or [])
 
 
-# Profile changes are serialised; the separate session lock makes checking a
-# callback and accepting its telemetry atomic with retiring that session.
-_profile_change_lock = RLock()
+# The session lock makes checking a SPOT callback and accepting its telemetry
+# atomic with retiring that session when the listeners are restarted.
 _spot_session_lock = RLock()
 _spot_session = 0
 
+# Each connected browser views its own profile. Maps Socket.IO session id to
+# profile name; the viewer is also in that profile's room.
+_client_profiles = {}
 
-def _serial_profile_change(view):
-    @functools.wraps(view)
-    def wrapped(*args, **kwargs):
-        with _profile_change_lock:
-            return view(*args, **kwargs)
-    return wrapped
+
+def _profile_room(profile_name):
+    return "profile:%s" % profile_name
+
+
+def _default_profile_name():
+    """The config's default profile. It supplies the shared chase car and
+    online uploader, and is what a new viewer starts on."""
+    return chasemapper_config.get("selected_profile", "")
+
+
+def _client_profile():
+    """Profile the requesting socket is viewing, or the default."""
+    _name = _client_profiles.get(getattr(flask.request, "sid", None))
+    if _name in chasemapper_config.get("profiles", {}):
+        return _name
+    return _default_profile_name()
+
+
+def _request_profile():
+    """Profile named by an HTTP request's ?profile=, or the default."""
+    _name = flask.request.args.get("profile", "")
+    if _name in chasemapper_config.get("profiles", {}):
+        return _name
+    return _default_profile_name()
+
+
+def _profiles_for_payload(callsign, source_port=None):
+    """Profiles a payload belongs to.
+
+    A callsign configured for a profile (APRS-IS balloon or SPOT tracker) goes
+    only to those profiles. Anything else - whatever auto_rx hears, say - goes
+    to every profile listening on the UDP port it arrived on, or to every
+    profile when the source is unknown (a reload from the log).
+    """
+    _profiles = chasemapper_config.get("profiles", {})
+    _call = str(callsign).upper()
+    _claimed = [
+        _name
+        for _name in _profiles
+        if _call
+        in {
+            str(_c).upper()
+            for _c in _profile_balloon_callsigns(_name) + _profile_spot_callsigns(_name)
+        }
+    ]
+    if _claimed:
+        return _claimed
+
+    if source_port is not None:
+        _on_port = [
+            _name
+            for _name, _profile in _profiles.items()
+            if _profile.get("telemetry_source_type") in ("horus_udp", "ozimux")
+            and _profile.get("telemetry_source_port") == source_port
+        ]
+        if _on_port:
+            return _on_port
+
+    return list(_profiles)
+
+
+def _payload_profiles(callsign):
+    _payload = current_payloads.get(callsign)
+    if _payload is None:
+        return []
+    return list(_payload.get("profiles", []))
 
 
 def _spot_feeds_for_profile(profile):
@@ -625,7 +698,7 @@ def flask_export_payloads():
         logging.error("KML export - could not read %s: %s" % (_path, e))
         return flask.jsonify({"error": "could not read log file."}), 500
 
-    _profile = chasemapper_config.get("selected_profile", "")
+    _profile = _request_profile()
     _profile_calls = _profile_balloon_callsigns(_profile)
     _wanted = {_call.upper() for _call in _profile_calls}
 
@@ -670,7 +743,7 @@ def flask_export_kml():
         logging.error("KML export - could not read %s: %s" % (_path, e))
         return flask.jsonify({"error": "could not read log file."}), 500
 
-    _profile = chasemapper_config.get("selected_profile", "")
+    _profile = _request_profile()
     _geofence = geofence_store.get("profiles", {}).get(_profile)
 
     # Payload selection. Explicit ?callsign= wins (the web client always
@@ -737,16 +810,32 @@ def flask_export_kml():
     return _response
 
 
-def flask_emit_event(event_name="none", data={}):
-    """ Emit a socketio event to any clients. """
-    socketio.emit(event_name, data, namespace="/chasemapper")
+def flask_emit_event(event_name="none", data={}, profiles=None):
+    """ Emit a socketio event to all clients, or only to viewers of the given profiles. """
+    if profiles is None:
+        socketio.emit(event_name, data, namespace="/chasemapper")
+        return
+    for _profile in profiles:
+        socketio.emit(
+            event_name, data, namespace="/chasemapper", to=_profile_room(_profile)
+        )
+
+
+def _emit_aprsis_state_all():
+    """ Send each profile's viewers that profile's APRS-IS state. """
+    for _profile in chasemapper_config.get("profiles", {}):
+        flask_emit_event("aprsis_state", _aprsis_state(_profile), profiles=[_profile])
 
 
 @socketio.on("connect", namespace="/chasemapper")
 def on_client_connect():
-    """ Push current APRS-IS state to any newly connected client. """
-    from flask_socketio import emit
-    emit("aprsis_state", _aprsis_state())
+    """ New viewers join a profile room when they send profile_change. """
+    pass
+
+
+@socketio.on("disconnect", namespace="/chasemapper")
+def on_client_disconnect(*args):
+    _client_profiles.pop(flask.request.sid, None)
 
 
 def sync_bearing_store_time_seq():
@@ -805,9 +894,13 @@ def client_settings_update(data):
         "time_seq_cycle": chasemapper_config["time_seq_cycle"],
     }
 
+    # A client's selected_profile is only what that viewer is looking at.
+    _default_profile = chasemapper_config.get("selected_profile", "")
+
     # Overwrite local config data with data from the client.
     chasemapper_config = data
     chasemapper_config.update(_time_seq_state)
+    chasemapper_config["selected_profile"] = _default_profile
     chasemapper_config.setdefault(
         "doa_confidence_threshold", default_config["doa_confidence_threshold"]
     )
@@ -831,28 +924,10 @@ def client_settings_update(data):
     # Start or Stop the Habitat Chase-Car Uploader.
     if _habitat_change == "start":
         if online_uploader == None:
-            _tracker = chasemapper_config["profiles"][
-                chasemapper_config["selected_profile"]
-            ]["online_tracker"]
-            if _tracker == "habitat":
-                logging.error(
-                    "Habitat uploader now deprecated due to Habitat retirement, not starting uploader."
-                )
-            elif _tracker == "sondehub":
-                online_uploader = SondehubChaseUploader(
-                    update_rate=chasemapper_config["habitat_update_rate"],
-                    callsign=chasemapper_config["habitat_call"],
-                )
-            elif _tracker == "sondehubamateur":
-                online_uploader = SondehubChaseUploader(
-                    update_rate=chasemapper_config["habitat_update_rate"],
-                    callsign=chasemapper_config["habitat_call"],
-                    amateur=True
-                )
-            else:
-                logging.error(
-                    "Unknown Online Tracker %s, not starting uploader." % _tracker
-                )
+            # One chase car, so the default profile picks the tracker.
+            online_uploader = _start_online_uploader(
+                chasemapper_config["profiles"][_default_profile_name()]["online_tracker"]
+            )
 
     elif _habitat_change == "stop":
         if online_uploader != None:
@@ -925,7 +1000,7 @@ def time_seq_update(data):
     flask_emit_event("server_settings_update", chasemapper_config)
 
 
-def handle_new_payload_position(data, log_position=True):
+def handle_new_payload_position(data, log_position=True, source_port=None):
 
     _lat = data["lat"]
     _lon = data["lon"]
@@ -934,20 +1009,6 @@ def handle_new_payload_position(data, log_position=True):
     _callsign = data["callsign"]
 
     _short_time = _time_dt.strftime("%H:%M:%S")
-
-    # SPOT trackers belong to a single telemetry profile. Drop positions for
-    # any other profile's tracker - a poll already in flight when the profile
-    # changed, or a last-position reload from a log written under a different
-    # profile, would otherwise put a foreign trace back on the map.
-    if (_callsign in _all_spot_callsigns()) and (
-        _callsign
-        not in _profile_spot_callsigns(chasemapper_config.get("selected_profile", ""))
-    ):
-        logging.debug(
-            "Ignoring position for SPOT tracker %s - not part of the selected profile."
-            % _callsign
-        )
-        return
 
     # Multiple receivers on the same network will each broadcast their own copy of
     # a decoded packet, so the same telemetry (or an older, delayed frame) can arrive
@@ -985,7 +1046,14 @@ def handle_new_payload_position(data, log_position=True):
             "abort_landing": [],
             "max_alt": 0.0,
             "snr": -255.0,
+            "profiles": [],
         }
+
+    # Which profiles' viewers see this payload.
+    current_payloads[_callsign]["profiles"] = sorted(
+        set(current_payloads[_callsign].get("profiles", []))
+        | set(_profiles_for_payload(_callsign, source_port))
+    )
 
     # Add new data into the payload's track, and get the latest ascent rate.
     current_payload_tracks[_callsign].add_telemetry(
@@ -1051,7 +1119,11 @@ def handle_new_payload_position(data, log_position=True):
     ]
 
     # Update the web client.
-    flask_emit_event("telemetry_event", current_payloads[_callsign]["telem"])
+    flask_emit_event(
+        "telemetry_event",
+        current_payloads[_callsign]["telem"],
+        profiles=_payload_profiles(_callsign),
+    )
 
     # Add the position into the logger
     if chase_logger and log_position:
@@ -1065,7 +1137,9 @@ def handle_modem_stats(data):
 
     if data["source"] in current_payloads:
         flask_emit_event(
-            "modem_stats_event", {"callsign": data["source"], "snr": data["snr"]}
+            "modem_stats_event",
+            {"callsign": data["source"], "snr": data["snr"]},
+            profiles=_payload_profiles(data["source"]),
         )
 
 
@@ -1082,7 +1156,7 @@ predictor_thread = None
 
 
 def _clear_launch_preview(profile_name, reason):
-    """Clear the temporary launch preview on every connected map."""
+    """Clear the temporary launch preview on that profile's maps."""
     global launch_preview_active_profile
 
     if launch_preview_active_profile == profile_name:
@@ -1090,24 +1164,27 @@ def _clear_launch_preview(profile_name, reason):
     flask_emit_event(
         "launch_preview_clear",
         {"profile": profile_name, "reason": reason},
+        profiles=[profile_name],
     )
 
 
 def _lock_launch_preview_for_live_prediction(callsign):
-    """Hand a profile from its temporary preview to real balloon tracking."""
-    profile_name = chasemapper_config.get("selected_profile", "")
-    profile = chasemapper_config.get("profiles", {}).get(profile_name, {})
-    balloon_callsigns = {
-        cs.upper() for cs in profile.get("aprsis_balloon_callsigns", [])
-    }
-    if callsign.upper() not in balloon_callsigns:
-        return
-    if profile_name in launch_preview_locked_profiles:
-        return
+    """Hand each profile flying this balloon from its temporary preview to
+    real balloon tracking."""
+    for profile_name in chasemapper_config.get("profiles", {}):
+        balloon_callsigns = {
+            cs.upper() for cs in _profile_balloon_callsigns(profile_name)
+        }
+        if callsign.upper() not in balloon_callsigns:
+            continue
+        if profile_name in launch_preview_locked_profiles:
+            continue
 
-    launch_preview_locked_profiles.add(profile_name)
-    _clear_launch_preview(profile_name, "live_prediction")
-    flask_emit_event("aprsis_state", _aprsis_state())
+        launch_preview_locked_profiles.add(profile_name)
+        _clear_launch_preview(profile_name, "live_prediction")
+        flask_emit_event(
+            "aprsis_state", _aprsis_state(profile_name), profiles=[profile_name]
+        )
 
 
 # Float-profile rules, shared by the scheduled predictor and the one-shot
@@ -1208,11 +1285,10 @@ def _calculate_launch_preview(car_state, ascent_rate):
 def launch_preview_request(data):
     """Run a one-shot launch prediction from the active APRS car fix."""
     global predictor_semaphore, launch_preview_active_profile
-    from flask_socketio import emit
 
     profile_name = str(data.get("profile", "")).strip()
-    active_profile_name = chasemapper_config.get("selected_profile", "")
-    profile = _active_profile()
+    active_profile_name = _client_profile()
+    profile = chasemapper_config.get("profiles", {}).get(active_profile_name)
 
     try:
         ascent_rate = float(data.get("ascent_rate"))
@@ -1231,7 +1307,12 @@ def launch_preview_request(data):
     if not profile.get("aprsis_active_car_callsign"):
         status("error", "No active APRS car callsign is configured.")
         return
-    source_callsign = profile["aprsis_active_car_callsign"]
+    # The chase car is shared, so the fix comes from the listener's active car.
+    source_callsign = (
+        aprsis_listener.active_car_callsign
+        if aprsis_listener is not None and aprsis_listener.active_car_callsign
+        else profile["aprsis_active_car_callsign"]
+    )
     if profile_name in launch_preview_locked_profiles:
         status("locked", "A live balloon prediction is active for this profile.")
         return
@@ -1260,7 +1341,7 @@ def launch_preview_request(data):
         if result is None:
             status("error", "Launch preview failed; check the predictor model.")
             return
-        if chasemapper_config.get("selected_profile", "") != profile_name:
+        if _client_profile() != profile_name:
             status("error", "The active telemetry profile changed; preview discarded.")
             return
         if profile_name in launch_preview_locked_profiles:
@@ -1279,7 +1360,7 @@ def launch_preview_request(data):
             }
         )
         launch_preview_active_profile = profile_name
-        flask_emit_event("launch_preview_update", result)
+        flask_emit_event("launch_preview_update", result, profiles=[profile_name])
         status("ready", "Launch preview updated from the latest APRS car fix.")
         logging.info(
             "Launch preview updated for profile %s from %s at %.2f m/s.",
@@ -1596,7 +1677,11 @@ def run_prediction():
                     "abort_path": current_payloads[_payload]["abort_path"],
                     "abort_landing": current_payloads[_payload]["abort_landing"],
                 }
-                flask_emit_event("predictor_update", _client_data)
+                flask_emit_event(
+                    "predictor_update",
+                    _client_data,
+                    profiles=_payload_profiles(_payload),
+                )
                 _lock_launch_preview_for_live_prediction(_payload)
 
                 # Add the prediction run to the logger.
@@ -1725,19 +1810,34 @@ def download_new_model_2():
 # Data Clearing Functions
 @socketio.on("payload_data_clear", namespace="/chasemapper")
 def clear_payload_data(data):
-    """ Clear the payload data store """
+    """ Clear the payloads belonging to the requesting viewer's profile """
     global predictor_semaphore, current_payloads, current_payload_tracks
     global launch_preview_locked_profiles
-    logging.warning("Client requested all payload data be cleared.")
+    _profile = _client_profile()
+    logging.warning("Client requested payload data for profile %s be cleared." % _profile)
     # Wait until any current predictions have finished running.
     while predictor_semaphore:
         time.sleep(0.1)
 
-    current_payloads = {}
-    current_payload_tracks = {}
-    launch_preview_locked_profiles.clear()
-    _clear_launch_preview(chasemapper_config.get("selected_profile", ""), "payload_clear")
-    flask_emit_event("aprsis_state", _aprsis_state())
+    _removed = [
+        _call
+        for _call in list(current_payloads.keys())
+        if _profile in _payload_profiles(_call)
+    ]
+    _affected = {_profile}
+    for _call in _removed:
+        _affected.update(_payload_profiles(_call))
+        current_payloads.pop(_call, None)
+        current_payload_tracks.pop(_call, None)
+
+    launch_preview_locked_profiles.discard(_profile)
+    _clear_launch_preview(_profile, "payload_clear")
+    # A payload can be shared between profiles, so their viewers lose it too.
+    if _removed:
+        flask_emit_event(
+            "payload_removed", {"callsigns": _removed}, profiles=sorted(_affected)
+        )
+    flask_emit_event("aprsis_state", _aprsis_state(_profile), profiles=[_profile])
 
 
 @socketio.on("car_data_clear", namespace="/chasemapper")
@@ -1794,7 +1894,7 @@ def mark_payload_recovered(data):
 # Incoming telemetry handlers
 
 
-def ozi_listener_callback(data):
+def ozi_listener_callback(data, source_port=None):
     """ Handle a OziMux input message """
     # OziMux message contains:
     # {'lat': -34.87915, 'comment': 'Telemetry Data', 'alt': 26493.0, 'lon': 139.11883, 'time': datetime.datetime(2018, 7, 16, 10, 55, 49, tzinfo=tzutc())}
@@ -1810,12 +1910,12 @@ def ozi_listener_callback(data):
     )
 
     try:
-        handle_new_payload_position(output)
+        handle_new_payload_position(output, source_port=source_port)
     except Exception as e:
         logging.error("Error Handling Payload Position - %s" % str(e))
 
 
-def udp_listener_summary_callback(data):
+def udp_listener_summary_callback(data, source_port=None):
     """ Handle a Payload Summary Message from UDPListener """
 
     # Modem stats messages are also passed in via this callback.
@@ -1860,7 +1960,7 @@ def udp_listener_summary_callback(data):
             output[_field] = data[_field]
 
     try:
-        handle_new_payload_position(output)
+        handle_new_payload_position(output, source_port=source_port)
     except Exception as e:
         logging.error("Error Handling Payload Position - %s" % str(e))
 
@@ -2011,18 +2111,63 @@ def check_data_age():
         time.sleep(2)
 
 
-@_serial_profile_change
-def start_listeners(profile):
-    """ Stop any currently running listeners, and startup a set of data listeners based on the supplied profile 
-    
-    Args:
-        profile (dict): A dictionary containing:
-            'name' (str): Profile name
-            'telemetry_source_type' (str): Data source type (ozimux or horus_udp)
-            'telemetry_source_port' (int): Data source port
-            'car_source_type' (str): Car Position source type (none, horus_udp, gpsd, or station)
-            'car_source_port' (int): Car Position source port
-            'online_tracker' (str): Which online tracker to upload chase-car info to ('sondehub' or 'sondehubamateur')
+def _start_online_uploader(tracker):
+    """ Start the chase-car uploader for an online tracker, or None. """
+    if tracker == "habitat":
+        logging.error(
+            "Habitat uploader now deprecated due to Habitat retirement, not starting uploader."
+        )
+    elif tracker == "sondehub":
+        return SondehubChaseUploader(
+            update_rate=chasemapper_config["habitat_update_rate"],
+            callsign=chasemapper_config["habitat_call"],
+        )
+    elif tracker == "sondehubamateur":
+        return SondehubChaseUploader(
+            update_rate=chasemapper_config["habitat_update_rate"],
+            callsign=chasemapper_config["habitat_call"],
+            amateur=True
+        )
+    else:
+        logging.error("Unknown Online Tracker %s, not starting uploader" % tracker)
+    return None
+
+
+def _udp_summary_callback(port):
+    def receive(data):
+        udp_listener_summary_callback(data, source_port=port)
+    return receive
+
+
+def _ozi_callback(port):
+    def receive(data):
+        ozi_listener_callback(data, source_port=port)
+    return receive
+
+
+def _unique(items):
+    _seen = []
+    for _item in items:
+        if _item not in _seen:
+            _seen.append(_item)
+    return _seen
+
+
+def start_listeners():
+    """ Stop any running listeners, and start listeners for every profile at once.
+
+    Each viewer picks their own profile, so telemetry for all of them has to be
+    flowing. Sources are shared: one UDP listener per port, one APRS-IS
+    connection carrying every profile's callsigns, and one SPOT poller for every
+    profile's trackers. There is one chase car, so the car source and online
+    uploader come from the default profile.
+
+    Profile fields used:
+        'telemetry_source_type' (str): Data source type (ozimux or horus_udp)
+        'telemetry_source_port' (int): Data source port
+        'car_source_type' (str): Car Position source type (none, horus_udp, gpsd, serial, aprsis or station)
+        'car_source_port' (int): Car Position source port
+        'online_tracker' (str): Which online tracker to upload chase-car info to ('sondehub' or 'sondehubamateur')
     """
     global data_listeners, current_profile, online_uploader, chasemapper_config, aprsis_listener
 
@@ -2030,7 +2175,10 @@ def start_listeners(profile):
     with _spot_session_lock:
         _spot_session += 1
         session = _spot_session
-    current_profile = profile
+
+    _profiles = list(chasemapper_config["profiles"].values())
+    car_profile = chasemapper_config["profiles"][_default_profile_name()]
+    current_profile = car_profile
     aprsis_listener = None
 
     # Stop any existing listeners.
@@ -2050,144 +2198,109 @@ def start_listeners(profile):
 
     # Start up a new online uploader immediately if uploading is already enabled.
     if chasemapper_config["habitat_upload_enabled"] == True:
-        if profile["online_tracker"] == "habitat":
-            logging.error(
-                "Habitat uploader now deprecated due to Habitat retirement, not starting uploader."
-            )
-        elif profile["online_tracker"] == "sondehub":
-            online_uploader = SondehubChaseUploader(
-                update_rate=chasemapper_config["habitat_update_rate"],
-                callsign=chasemapper_config["habitat_call"],
-            )
-        elif profile["online_tracker"] == "sondehubamateur":
-            online_uploader = SondehubChaseUploader(
-                update_rate=chasemapper_config["habitat_update_rate"],
-                callsign=chasemapper_config["habitat_call"],
-                amateur=True
-            )
-        else:
-            logging.error(
-                "Unknown Online Tracker %s, not starting uploader"
-                % (profile["online_tracker"])
-            )
+        online_uploader = _start_online_uploader(car_profile["online_tracker"])
 
-    # Start up a OziMux listener, if we are using one.
-    if profile["telemetry_source_type"] == "ozimux":
+    _car_type = car_profile["car_source_type"]
+
+    # OziMux listeners, one per port.
+    _ozi_ports = _unique(
+        [_p["telemetry_source_port"] for _p in _profiles if _p["telemetry_source_type"] == "ozimux"]
+    )
+    for _port in _ozi_ports:
+        logging.info("Using OziMux data source on UDP Port %d" % _port)
+        data_listeners.append(
+            OziListener(telemetry_callback=_ozi_callback(_port), port=_port)
+        )
+
+    # Horus UDP listeners, one per port. A port can carry telemetry, the
+    # chase car's position, or both. (We also take bearings from all of them.)
+    _telem_ports = _unique(
+        [_p["telemetry_source_port"] for _p in _profiles if _p["telemetry_source_type"] == "horus_udp"]
+    )
+    _car_port = car_profile["car_source_port"] if _car_type == "horus_udp" else None
+    for _port in _unique(_telem_ports + ([_car_port] if _car_port is not None else [])):
+        if _port in _ozi_ports:
+            logging.error("UDP port %d is used by both OziMux and Horus UDP - not starting Horus UDP on it." % _port)
+            continue
+        _telem = _port in _telem_ports
+        _car = _port == _car_port
         logging.info(
-            "Using OziMux data source on UDP Port %d" % profile["telemetry_source_port"]
+            "Starting Horus UDP listener on port %d (%s)"
+            % (_port, " + ".join(_what for _what, _on in (("telemetry", _telem), ("car position", _car)) if _on))
         )
-        _ozi_listener = OziListener(
-            telemetry_callback=ozi_listener_callback,
-            port=profile["telemetry_source_port"],
-        )
-        data_listeners.append(_ozi_listener)
-
-    # Start up UDP Broadcast Listener (which we use for car positions even if not for the payload)
-
-    # Case 1 - Both telemetry and car position sources are set to horus_udp, and have the same port set. Only start a single UDP listener
-    if (
-        (profile["telemetry_source_type"] == "horus_udp")
-        and (profile["car_source_type"] == "horus_udp")
-        and (profile["car_source_port"] == profile["telemetry_source_port"])
-    ):
-        # In this case, we start a single Horus UDP listener.
-        logging.info(
-            "Starting single Horus UDP listener on port %d"
-            % profile["telemetry_source_port"]
-        )
-        _telem_horus_udp_listener = UDPListener(
-            summary_callback=udp_listener_summary_callback,
-            gps_callback=udp_listener_car_callback,
+        _udp_listener = UDPListener(
+            summary_callback=_udp_summary_callback(_port) if _telem else None,
+            gps_callback=udp_listener_car_callback if _car else None,
             bearing_callback=udp_listener_bearing_callback,
-            port=profile["telemetry_source_port"],
+            port=_port,
         )
-        _telem_horus_udp_listener.start()
-        data_listeners.append(_telem_horus_udp_listener)
+        _udp_listener.start()
+        data_listeners.append(_udp_listener)
 
-    else:
-        if profile["telemetry_source_type"] == "horus_udp":
-            # Telemetry via Horus UDP - Start up a listener
-            logging.info(
-                "Starting Telemetry Horus UDP listener on port %d"
-                % profile["telemetry_source_port"]
-            )
-            _telem_horus_udp_listener = UDPListener(
-                summary_callback=udp_listener_summary_callback,
-                gps_callback=None,
-                bearing_callback=udp_listener_bearing_callback,
-                port=profile["telemetry_source_port"],
-            )
-            _telem_horus_udp_listener.start()
-            data_listeners.append(_telem_horus_udp_listener)
+    if _car_type == "gpsd":
+        # GPSD Car Position Source
+        logging.info("Starting GPSD Car Position Listener.")
+        _gpsd_gps = GPSDAdaptor(
+            hostname=chasemapper_config["car_gpsd_host"],
+            port=chasemapper_config["car_gpsd_port"],
+            callback=udp_listener_car_callback,
+        )
+        data_listeners.append(_gpsd_gps)
 
-        if profile["car_source_type"] == "horus_udp":
-            # Car Position via Horus UDP - Start up a listener
-            logging.info(
-                "Starting Car Position Horus UDP listener on port %d"
-                % profile["car_source_port"]
-            )
-            _car_horus_udp_listener = UDPListener(
-                summary_callback=None,
-                gps_callback=udp_listener_car_callback,
-                bearing_callback=udp_listener_bearing_callback,
-                port=profile["car_source_port"],
-            )
-            _car_horus_udp_listener.start()
-            data_listeners.append(_car_horus_udp_listener)
+    elif _car_type == "serial":
+        # Serial GPS Source.
+        logging.info("Starting Serial GPS Listener.")
+        _serial_gps = SerialGPS(
+            serial_port=chasemapper_config["car_serial_port"],
+            serial_baud=chasemapper_config["car_serial_baud"],
+            callback=udp_listener_car_callback,
+        )
+        data_listeners.append(_serial_gps)
 
-        elif profile["car_source_type"] == "gpsd":
-            # GPSD Car Position Source
-            logging.info("Starting GPSD Car Position Listener.")
-            _gpsd_gps = GPSDAdaptor(
-                hostname=chasemapper_config["car_gpsd_host"],
-                port=chasemapper_config["car_gpsd_port"],
-                callback=udp_listener_car_callback,
-            )
-            data_listeners.append(_gpsd_gps)
+    elif _car_type == "station":
+        logging.info("Using Stationary receiver position.")
 
-        elif profile["car_source_type"] == "serial":
-            # Serial GPS Source.
-            logging.info("Starting Serial GPS Listener.")
-            _serial_gps = SerialGPS(
-                serial_port=chasemapper_config["car_serial_port"],
-                serial_baud=chasemapper_config["car_serial_baud"],
-                callback=udp_listener_car_callback,
-            )
-            data_listeners.append(_serial_gps)
+    elif _car_type not in ("horus_udp", "aprsis"):
+        # No Car position.
+        logging.info("No car position data source.")
 
-        elif profile["car_source_type"] == "aprsis":
-            logging.info(
-                "Starting APRS-IS listener for profile '%s' (cars=%s, balloons=%s)."
-                % (
-                    profile.get("name", "?"),
-                    profile.get("aprsis_car_callsigns", []),
-                    profile.get("aprsis_balloon_callsigns", []),
-                )
-            )
-            _aprsis = APRSISListener(
-                server=chasemapper_config["aprsis_server"],
-                port=chasemapper_config["aprsis_port"],
-                login_callsign=chasemapper_config["aprsis_login_callsign"],
-                balloon_callsigns=profile.get("aprsis_balloon_callsigns", []),
-                car_callsigns=profile.get("aprsis_car_callsigns", []),
-                active_car_callsign=profile.get("aprsis_active_car_callsign", ""),
-                summary_callback=udp_listener_summary_callback,
-                car_callback=udp_listener_car_callback,
-            )
-            _aprsis.start()
-            data_listeners.append(_aprsis)
-            aprsis_listener = _aprsis
+    # One APRS-IS connection for every profile that uses it. Balloons from any
+    # of them are tracked; the car only follows the default profile's.
+    _aprs_profiles = [_p for _p in _profiles if _p["car_source_type"] == "aprsis"]
+    if _aprs_profiles:
+        _balloons = _unique(
+            [_cs for _p in _aprs_profiles for _cs in _p.get("aprsis_balloon_callsigns", [])]
+        )
+        _cars = _unique(
+            [_cs for _p in _aprs_profiles for _cs in _p.get("aprsis_car_callsigns", [])]
+        )
+        _active_car = (
+            car_profile.get("aprsis_active_car_callsign", "") if _car_type == "aprsis" else ""
+        )
+        logging.info(
+            "Starting APRS-IS listener for profiles %s (cars=%s, balloons=%s)."
+            % (", ".join(_p.get("name", "?") for _p in _aprs_profiles), _cars, _balloons)
+        )
+        _aprsis = APRSISListener(
+            server=chasemapper_config["aprsis_server"],
+            port=chasemapper_config["aprsis_port"],
+            login_callsign=chasemapper_config["aprsis_login_callsign"],
+            balloon_callsigns=_balloons,
+            car_callsigns=_cars,
+            active_car_callsign=_active_car,
+            summary_callback=udp_listener_summary_callback,
+            car_callback=udp_listener_car_callback,
+        )
+        _aprsis.start()
+        data_listeners.append(_aprsis)
+        aprsis_listener = _aprsis
 
-        elif profile["car_source_type"] == "station":
-            logging.info("Using Stationary receiver position.")
-
-        else:
-            # No Car position.
-            logging.info("No car position data source.")
-
-    # SPOT GPS tracker feeds. Each profile lists its own trackers, so
-    # switching profiles swaps which SPOT traces are polled.
-    _spot_feeds = _spot_feeds_for_profile(profile) or []
+    # SPOT GPS tracker feeds, for every profile's trackers.
+    _spot_feeds = []
+    for _p in _profiles:
+        for _feed in _spot_feeds_for_profile(_p):
+            if _feed[0] not in [_f[0] for _f in _spot_feeds]:
+                _spot_feeds.append(tuple(_feed))
     if chasemapper_config.get("spot_enabled"):
         if _spot_feeds:
             _spot = SPOTListener(
@@ -2198,90 +2311,39 @@ def start_listeners(profile):
             _spot.start()
             data_listeners.append(_spot)
         else:
-            logging.info(
-                "SPOT: no feeds configured for profile '%s'." % profile.get("name", "?")
-            )
-
-
-def _remove_foreign_spot_payloads():
-    """Drop SPOT tracks belonging to profiles other than the selected one.
-
-    SPOT feeds are per-profile, so a trace picked up under one profile would
-    otherwise sit on the map after switching away from it.
-    """
-    global current_payloads, current_payload_tracks
-
-    _profile_name = chasemapper_config.get("selected_profile", "")
-    _keep = set(_profile_spot_callsigns(_profile_name))
-    _spot_callsigns = _all_spot_callsigns()
-    _stale = [
-        _call
-        for _call in list(current_payloads.keys())
-        if (_call in _spot_callsigns) and (_call not in _keep)
-    ]
-
-    if len(_stale) == 0:
-        return
-
-    # These display-only callsigns are excluded before the predictor reads tracks.
-    for _call in _stale:
-        current_payloads.pop(_call, None)
-        current_payload_tracks.pop(_call, None)
-
-    logging.info(
-        "Removed SPOT tracker(s) %s - not flown under profile '%s'."
-        % (", ".join(_stale), _profile_name)
-    )
-
-    # Tell the clients to take them off the map too.
-    flask_emit_event("payload_removed", {"callsigns": _stale})
+            logging.info("SPOT: no feeds configured for any profile.")
 
 
 @socketio.on("profile_change", namespace="/chasemapper")
-@_serial_profile_change
 def profile_change(data):
-    """ Client has requested a profile change """
-    global chasemapper_config
-    logging.info("Client requested change to profile: %s" % data)
-
+    """ A client picked which profile it is viewing. Only its own view changes. """
     if data not in chasemapper_config.get("profiles", {}):
         return
-    previous_profile = chasemapper_config.get("selected_profile", "")
-    _clear_launch_preview(previous_profile, "profile_change")
+    logging.info("Client viewing profile: %s" % data)
 
-    # Change the profile, and restart the listeners.
-    global _spot_session
-    with _spot_session_lock:
-        _spot_session += 1
-        chasemapper_config["selected_profile"] = data
-        _remove_foreign_spot_payloads()
-    start_listeners(
-        chasemapper_config["profiles"][chasemapper_config["selected_profile"]]
-    )
+    _sid = flask.request.sid
+    _previous = _client_profiles.get(_sid)
+    if (_previous is not None) and (_previous != data):
+        leave_room(_profile_room(_previous))
+    join_room(_profile_room(data))
+    _client_profiles[_sid] = data
 
-    # Update all clients with the new profile selection
-    flask_emit_event("server_settings_update", chasemapper_config)
-    flask_emit_event("aprsis_state", _aprsis_state())
+    emit("aprsis_state", _aprsis_state(data))
 
 
-def _active_profile():
-    """Return the dict for the currently selected profile, or None."""
-    name = chasemapper_config.get("selected_profile", "")
-    return chasemapper_config.get("profiles", {}).get(name)
+def _profile_config(profile_name):
+    return chasemapper_config.get("profiles", {}).get(profile_name)
 
 
-def _aprsis_state():
-    p = _active_profile() or {}
+def _aprsis_state(profile_name):
+    p = _profile_config(profile_name) or {}
     return {
         "profile_name": p.get("name", ""),
         "active_car": p.get("aprsis_active_car_callsign", ""),
         "car_callsigns": p.get("aprsis_car_callsigns", []),
         "balloon_callsigns": p.get("aprsis_balloon_callsigns", []),
         "connected": (aprsis_listener is not None) and aprsis_listener.connected,
-        "launch_preview_locked": (
-            chasemapper_config.get("selected_profile", "")
-            in launch_preview_locked_profiles
-        ),
+        "launch_preview_locked": profile_name in launch_preview_locked_profiles,
     }
 
 
@@ -2289,14 +2351,17 @@ def _aprsis_state():
 def aprsis_set_car_callsign(data):
     global aprsis_listener
     cs = data.get("callsign", "").strip().upper()
-    p = _active_profile()
+    p = _profile_config(_client_profile())
     if not cs or p is None:
         return
-    p["aprsis_active_car_callsign"] = cs
+    # There is one chase car, so every profile that knows this car follows it.
+    for _profile in chasemapper_config.get("profiles", {}).values():
+        if (_profile is p) or (cs in _profile.get("aprsis_car_callsigns", [])):
+            _profile["aprsis_active_car_callsign"] = cs
     if aprsis_listener is not None:
         aprsis_listener.set_active_car_callsign(cs)
     logging.info("APRS-IS active car callsign: %s (profile %s)" % (cs, p.get("name")))
-    flask_emit_event("aprsis_state", _aprsis_state())
+    _emit_aprsis_state_all()
     # Also push the full settings so client-side config copies stay in sync;
     # otherwise a later client_settings_update would clobber this change.
     flask_emit_event("server_settings_update", chasemapper_config)
@@ -2306,14 +2371,14 @@ def aprsis_set_car_callsign(data):
 def aprsis_add_car_callsign(data):
     global aprsis_listener
     cs = data.get("callsign", "").strip().upper()
-    p = _active_profile()
+    p = _profile_config(_client_profile())
     if not cs or p is None:
         return
     if cs not in p.get("aprsis_car_callsigns", []):
         p.setdefault("aprsis_car_callsigns", []).append(cs)
     if aprsis_listener is not None:
         aprsis_listener.add_car_callsign(cs)
-    flask_emit_event("aprsis_state", _aprsis_state())
+    _emit_aprsis_state_all()
     flask_emit_event("server_settings_update", chasemapper_config)
 
 
@@ -2321,24 +2386,24 @@ def aprsis_add_car_callsign(data):
 def aprsis_add_balloon_callsign(data):
     global aprsis_listener
     cs = data.get("callsign", "").strip().upper()
-    p = _active_profile()
+    p = _profile_config(_client_profile())
     if not cs or p is None:
         return
     if cs not in p.get("aprsis_balloon_callsigns", []):
         p.setdefault("aprsis_balloon_callsigns", []).append(cs)
     if aprsis_listener is not None:
         aprsis_listener.add_balloon_callsign(cs)
-    flask_emit_event("aprsis_state", _aprsis_state())
+    _emit_aprsis_state_all()
     flask_emit_event("server_settings_update", chasemapper_config)
 
 
 @socketio.on("aprsis_remove_callsign", namespace="/chasemapper")
 def aprsis_remove_callsign(data):
-    """Remove a callsign from the active profile's car or balloon list."""
+    """Remove a callsign from the viewer's profile's car or balloon list."""
     global aprsis_listener
     cs = data.get("callsign", "").strip().upper()
     kind = data.get("kind", "")  # "car" or "balloon"
-    p = _active_profile()
+    p = _profile_config(_client_profile())
     if not cs or p is None or kind not in ("car", "balloon"):
         return
     key = "aprsis_car_callsigns" if kind == "car" else "aprsis_balloon_callsigns"
@@ -2348,9 +2413,13 @@ def aprsis_remove_callsign(data):
     if kind == "car" and p.get("aprsis_active_car_callsign") == cs:
         new_active = p["aprsis_car_callsigns"][0] if p["aprsis_car_callsigns"] else ""
         p["aprsis_active_car_callsign"] = new_active
-        if aprsis_listener is not None and new_active:
+        if (
+            aprsis_listener is not None
+            and new_active
+            and aprsis_listener.active_car_callsign == cs
+        ):
             aprsis_listener.set_active_car_callsign(new_active)
-    flask_emit_event("aprsis_state", _aprsis_state())
+    _emit_aprsis_state_all()
     flask_emit_event("server_settings_update", chasemapper_config)
 
 
@@ -2492,10 +2561,8 @@ if __name__ == "__main__":
     car_track.heading_gate_threshold = chasemapper_config["car_speed_gate"]
     car_track.turn_rate_threshold = chasemapper_config["turn_rate_threshold"]
 
-    # Start listeners using the default profile selection.
-    start_listeners(
-        chasemapper_config["profiles"][chasemapper_config["selected_profile"]]
-    )
+    # Start listeners for every profile; viewers each pick their own.
+    start_listeners()
 
     # Start up the predictor, if enabled.
     if chasemapper_config["pred_enabled"]:

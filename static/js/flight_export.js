@@ -93,6 +93,12 @@ var FlightExport = (function(){
         _select.value = _still_present ? _previous : _default;
     }
 
+    // Exports use the profile this browser is viewing.
+    function profileQuery(){
+        var _profile = (typeof chase_config !== "undefined" && chase_config) ? chase_config.selected_profile : "";
+        return "&profile=" + encodeURIComponent(_profile || "");
+    }
+
     function refresh(){
         return fetch("/export/flights")
             .then(function(response){
@@ -206,7 +212,7 @@ var FlightExport = (function(){
         _container.textContent = "Reading log…";
         _container.style.color = "#6b7280";
 
-        return fetch("/export/payloads?log=" + encodeURIComponent(_log))
+        return fetch("/export/payloads?log=" + encodeURIComponent(_log) + profileQuery())
             .then(function(response){
                 if (!response.ok){
                     throw new Error("HTTP " + response.status);
@@ -284,7 +290,7 @@ var FlightExport = (function(){
 
         var _filename = "chasemapper_" + _log.replace(/\.log$/, "") + ".kml";
 
-        var _query = "log=" + encodeURIComponent(_log);
+        var _query = "log=" + encodeURIComponent(_log) + profileQuery();
         for (var i = 0; i < _callsigns.length; i++){
             _query += "&callsign=" + encodeURIComponent(_callsigns[i]);
         }
