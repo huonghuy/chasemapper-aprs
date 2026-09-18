@@ -428,6 +428,35 @@ function hideBalloon(callsign){
     }
 }
 
+function removeBalloon(callsign){
+    // Remove a payload from the map and the local telemetry store entirely.
+    // Used when the server drops a payload, i.e. a SPOT tracker belonging to
+    // a telemetry profile we have just switched away from.
+    if (balloon_positions.hasOwnProperty(callsign) == false){
+        return;
+    }
+
+    // Take every layer this payload owns off the map. Unlike hideBalloon this
+    // is permanent, so remove them unconditionally rather than only the ones
+    // currently paired with a visible marker.
+    var _balloon = balloon_positions[callsign];
+    var _layers = ['marker', 'path', 'pred_marker', 'pred_path', 'burst_marker', 'abort_marker', 'abort_path'];
+    _layers.forEach(function(_layer){
+        if ((_balloon[_layer] != null) && (typeof _balloon[_layer].remove === 'function')){
+            _balloon[_layer].remove();
+        }
+    });
+
+    delete balloon_positions[callsign];
+
+    // If we were following it, fall back to another payload, if there is one.
+    if (balloon_currently_following === callsign){
+        var _remaining = Object.keys(balloon_positions);
+        balloon_currently_following = (_remaining.length > 0) ? _remaining[0] : "none";
+        $('#time_to_landing').text("");
+    }
+}
+
 function showBalloon(callsign){
     if (balloon_positions.hasOwnProperty(callsign) == true){
             balloon_positions[callsign].visible = true;

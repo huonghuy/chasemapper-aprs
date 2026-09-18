@@ -130,6 +130,8 @@ aprsis_login_callsign = KC1RBW
 # Polls findmespot.com public XML feeds and plots the positions as
 # additional balloon tracks for cross-referencing against the primary
 # RTTY/LoRa/APRS telemetry. Display-only — not fed into the predictor.
+# Each [profile_N] may override spot_feeds = CALLSIGN:ENV_VAR, ...
+# Omit it to inherit [spot]; an empty spot_feeds = disables that profile.
 [spot]
 
 spot_enabled = True

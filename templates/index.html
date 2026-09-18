@@ -648,6 +648,19 @@
                 handleModemStats(data);
             });
 
+            // The server has dropped these payloads from its data store, i.e.
+            // SPOT trackers belonging to a profile we just switched away from.
+            socket.on('payload_removed', function(data) {
+                if (!data || !data.callsigns){
+                    return;
+                }
+                data.callsigns.forEach(function(_callsign){
+                    removeBalloon(_callsign);
+                });
+                updateTelemetryTable();
+                updateSummaryDisplay();
+            });
+
             // Predictor Functions
             socket.on('predictor_model_update', function(data){
                 var _model_data = data.model;
