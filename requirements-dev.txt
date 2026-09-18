@@ -10,3 +10,10 @@ requests        # airspace_cache, parcel_proxy, spot
 defusedxml      # geofence, spot
 shapely         # parcel_proxy
 aprslib         # aprsis
+
+# Geometry and Flask route regression tests (no native predictor required).
+numpy
+flask
+flask-socketio
+python-dateutil
+pytz

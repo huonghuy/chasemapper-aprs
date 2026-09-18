@@ -5,6 +5,7 @@
 #   Copyright (C) 2018  Mark Jessop <vk5qi@rfhead.net>
 #   Released under GNU GPL v3 or later
 #
+import math
 import logging
 import os
 
@@ -15,6 +16,8 @@ except ImportError:
     # Python 3
     from configparser import RawConfigParser
 
+
+_INSTALL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 default_config = {
     # Start location for the map (until either a chase car position, or balloon position is available.)
@@ -231,6 +234,10 @@ def parse_config_file(filename):
             logging.warning("Skipping KML overlay %d with missing name or path.", i)
             continue
 
+        if not os.path.isabs(_overlay_path):
+            _overlay_path = os.path.join(_INSTALL_DIR, _overlay_path)
+        _overlay_path = os.path.normpath(_overlay_path)
+
         chase_config["kml_overlays"].append(
             {
                 "id": str(i),
@@ -264,11 +271,20 @@ def parse_config_file(filename):
         logging.info("Missing turn rate gate setting, using default (4m/s)")
         chase_config["turn_rate_threshold"] = 4.0
 
+    # Fractional values are supported - GenericTrack weights the oldest sample by
+    # the remainder. Below 2 there aren't enough positions to derive a rate.
     try:
-        chase_config["ascent_rate_averaging"] = config.getint("predictor", "ascent_rate_averaging")
+        chase_config["ascent_rate_averaging"] = config.getfloat("predictor", "ascent_rate_averaging")
+        if not math.isfinite(chase_config["ascent_rate_averaging"]) or chase_config["ascent_rate_averaging"] < 2.0:
+            logging.warning(
+                "ascent_rate_averaging must be at least 2, using default (10)"
+            )
+            chase_config["ascent_rate_averaging"] = 10.0
     except:
-        logging.info("Missing ascent_rate_averaging setting, using default (10)")
-        chase_config["ascent_rate_averaging"] = 10
+        logging.info(
+            "Missing or unparseable ascent_rate_averaging setting, using default (10)"
+        )
+        chase_config["ascent_rate_averaging"] = 10.0
 
     try:
         chase_config["bearings_only_mode"] = config.getboolean("bearings", "bearings_only_mode")

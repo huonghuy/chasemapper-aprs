@@ -20,13 +20,13 @@ def read_file(filename):
     """ Read log file, and output an array of dicts. """
     _output = []
 
-    _f = open(filename, "r")
-    for _line in _f:
-        try:
-            _data = json.loads(_line)
-            _output.append(_data)
-        except Exception as e:
-            logging.debug("Error reading line: %s" % str(e))
+    with open(filename, "r") as _f:
+        for _line in _f:
+            try:
+                _data = json.loads(_line)
+                _output.append(_data)
+            except Exception as e:
+                logging.debug("Error reading line: %s" % str(e))
     if len(_output) != 0:
         logging.info("Read %d log entries from %s" % (len(_output), filename))
 

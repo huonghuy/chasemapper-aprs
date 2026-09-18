@@ -130,13 +130,26 @@ class ChaseLogger(object):
 
             # Process everything in the queue.
             self.file_lock.acquire()
+            _wrote = False
             while self.input_queue.qsize() > 0:
                 try:
                     _data = self.input_queue.get_nowait()
                     _data_str = json.dumps(_data)
                     self.f.write(_data_str + "\n")
+                    _wrote = True
                 except Exception as e:
                     self.log_error("Error processing data - %s" % str(e))
+
+            # Flush each batch to disk. Without this, entries sit in the
+            # stdio buffer until it fills (8 kB) or the file is closed,
+            # so anything reading the log back while chasemapper is still
+            # running - the KML export, read_last_balloon_telemetry() -
+            # would miss the most recent packets.
+            if _wrote:
+                try:
+                    self.f.flush()
+                except Exception as e:
+                    self.log_error("Error flushing log file - %s" % str(e))
 
             self.file_lock.release()
             # Sleep while waiting for some new data.

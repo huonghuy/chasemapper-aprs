@@ -264,3 +264,6 @@ html, body {
         display: none !important;
     }
 }
+/* Let map clicks add geofence vertices through the vector stack. */
+.map-draw-mode .leaflet-overlay-pane path,
+.map-draw-mode .leaflet-pane svg path { pointer-events: none !important; }

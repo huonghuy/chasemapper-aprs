@@ -15,6 +15,7 @@ serves cached GeoJSON to the chasemapper frontend. Background threads refresh
 the cache (12h for airspace, 15min for TFRs).
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
@@ -175,6 +176,9 @@ def _write_layer(layer, geojson, fetched_at):
 
     # Serialises two refresh rounds racing on one layer.
     with _LAYER_WRITE_LOCKS[layer]:
+        previous = _meta_cache.get(layer)
+        if previous and (previous.get("fetched_at") or 0) > fetched_at:
+            return
         tmp = _stage_json(path, geojson)
         try:
             os.replace(tmp, path)
@@ -419,6 +423,20 @@ def get_status():
     return out
 
 
+def get_layer_path(layer):
+    """Whitelisted absolute cache path for direct HTTP file serving."""
+    if layer not in LAYERS or _layer_meta(layer) is None:
+        return None
+    path = os.path.abspath(_layer_path(layer))
+    return path if os.path.isfile(path) else None
+
+
+def _refresh_layers(layers):
+    # Bounded fan-out; wait for workers before allowing another manual round.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        return dict(zip(layers, pool.map(_try_refresh, layers)))
+
+
 def force_refresh_all():
     """Re-fetch every layer from FAA now. Runs layers in parallel; serialised
     with a global lock so concurrent button presses coalesce into one round.
@@ -430,21 +448,7 @@ def force_refresh_all():
         _refresh_in_progress = True
 
     try:
-        # Pre-populate so a worker that outlives the join timeout still
-        # leaves a (False) entry rather than a missing key.
-        results = {layer: False for layer in LAYERS}
-        threads = []
-
-        def worker(layer):
-            results[layer] = _try_refresh(layer)
-
-        for layer in LAYERS:
-            t = threading.Thread(target=worker, args=(layer,), daemon=True)
-            t.start()
-            threads.append(t)
-
-        for t in threads:
-            t.join(timeout=REQUEST_TIMEOUT + 5)
+        results = _refresh_layers(LAYERS)
 
         return {"already_running": False, "results": results, "status": get_status()}
     finally:
@@ -461,16 +465,19 @@ def start_background_refresh():
 
     _ensure_cache_dir()
 
+    missing = []
     for layer in LAYERS:
         geo = _read_layer(layer)
         # A cache written by the old sidecar layout has no embedded
         # fetched_at, so re-fetch once rather than serve it with no age.
         if geo is None or geo.get("fetched_at") is None:
             logging.info("Airspace cache: no usable cache for %s, fetching synchronously", layer)
-            _try_refresh(layer)
+            missing.append(layer)
         else:
             _meta_cache[layer] = _meta_from(geo)
             logging.info("Airspace cache: loading %s from cache", layer)
+
+    _refresh_layers(missing)
 
     for layer in _CLASS_WHERE:
         threading.Thread(

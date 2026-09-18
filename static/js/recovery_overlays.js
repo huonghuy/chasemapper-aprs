@@ -25,7 +25,6 @@
         tfr:     { color: "#f97316", weight: 2, fillOpacity: 0.15 }
     };
 
-    var AIRSPACE_PANE_BASE_Z = 410;
 
     var PARCEL_STYLE = { color: "#ea580c", weight: 1, fillOpacity: 0.08 };
     var SEARCH_CIRCLE_STYLE = { color: "#dc2626", weight: 2, dashArray: "6,6", fill: false };
@@ -36,7 +35,8 @@
         airspaceData: {},
         airspaceLayers: {},
         parcelLayer: null,
-        parcelCanvas: null,
+        parcelGeneration: 0,
+        parcelLast: null,
         searchCircle: null,
         parcelTimer: null,
         airspaceFetching: {},
@@ -224,9 +224,7 @@
     // full-map Canvas renderer swallowing clicks intended for lower layers.
     function ensureAirspacePanes() {
         AIRSPACE_LAYERS.forEach(function (layer, i) {
-            var name = airspacePaneName(layer);
-            var pane = state.map.getPane(name) || state.map.createPane(name);
-            pane.style.zIndex = String(AIRSPACE_PANE_BASE_Z + i * 10);
+            MapPanes.airspace(state.map, layer.replace("_", "-"), i);
         });
     }
 
@@ -326,6 +324,8 @@
     }
 
     function clearParcels() {
+        state.parcelGeneration++;
+        state.parcelLast = null;
         if (state.parcelLayer) {
             state.map.removeLayer(state.parcelLayer);
             state.parcelLayer = null;
@@ -346,7 +346,7 @@
         if (state.searchCircle) state.map.removeLayer(state.searchCircle);
         var radiusMeters = getRadiusMiles() * 1609.344;
         state.searchCircle = L.circle(state.landing, Object.assign(
-            { radius: radiusMeters }, SEARCH_CIRCLE_STYLE
+            { radius: radiusMeters, pane: MapPanes.parcels(state.map), interactive: false }, SEARCH_CIRCLE_STYLE
         )).addTo(state.map);
     }
 
@@ -358,6 +358,11 @@
         }
         var radius = getRadiusMiles();
         renderSearchCircle();
+        var landing = state.landing.slice();
+        var previous = state.parcelLast;
+        if (previous && previous.radius === radius &&
+            state.map.distance(previous.landing, landing) <= radius * 1609.344 * 0.1) return;
+        var generation = ++state.parcelGeneration;
         var url = "/parcels?lat=" + state.landing[0] +
                   "&lon=" + state.landing[1] +
                   "&radius=" + radius;
@@ -365,7 +370,7 @@
         fetch(url)
             .then(function (r) { return r.json(); })
             .then(function (data) {
-                if (!$("toggle-parcels").checked) return;
+                if (generation !== state.parcelGeneration || !$("toggle-parcels").checked) return;
                 if (data.error) {
                     if (state.parcelLayer) {
                         state.map.removeLayer(state.parcelLayer);
@@ -381,11 +386,11 @@
                 if (state.parcelLayer) {
                     state.map.removeLayer(state.parcelLayer);
                 }
-                if (!state.parcelCanvas) state.parcelCanvas = L.canvas();
                 state.parcelLayer = L.geoJSON(data, {
-                    renderer: state.parcelCanvas,
+                    pane: MapPanes.parcels(state.map),
                     style: PARCEL_STYLE,
                     onEachFeature: function (feature, lyr) {
+                        lyr.bindPopup(function () {
                         var p = feature.properties || {};
                         var owner = p.OWNNAME1 || "(no owner)";
                         var addr = p.PREMISEADD || "";
@@ -398,25 +403,33 @@
                             (addr ? htmlEscape(addr) + "<br>" : "") +
                             (acct ? "<small>Acct: " + htmlEscape(acct) + "</small><br>" : "") +
                             mapsLinksHtml(0, 0, addr || (state.landing && (state.landing[0] + "," + state.landing[1])));
-                        lyr.bindPopup(html);
+                        return html;
+                        });
                     }
                 }).addTo(state.map);
+                state.parcelLast = {landing: landing, radius: radius};
                 var count = (data.features || []).length;
                 var msg = count + " parcels within " + radius + " mi";
                 if (data._truncated) msg += " (TRUNCATED, results capped)";
                 setStatus("parcel-status", msg, !!data._truncated);
             })
             .catch(function (e) {
+                if (generation !== state.parcelGeneration) return;
                 setStatus("parcel-status", "Parcel fetch failed: " + e.message, true);
             });
     }
 
     function debounceParcelFetch() {
+        state.parcelGeneration++;
         if (state.parcelTimer) clearTimeout(state.parcelTimer);
         state.parcelTimer = setTimeout(fetchParcels, 400);
     }
 
     function wireToggles() {
+        document.querySelectorAll(".airspace-swatch").forEach(function (el) {
+            var style = AIRSPACE_STYLE[el.dataset.layer];
+            if (style) el.style.color = style.color;
+        });
         $("toggle-airspace").addEventListener("change", syncAirspace);
         AIRSPACE_LAYERS.forEach(function (layer) {
             var el = $(airspaceToggleId(layer));
@@ -455,6 +468,7 @@
     }
 
     var Api = {
+        toggleIds: function () { return AIRSPACE_LAYERS.map(airspaceToggleId); },
         init: function (map) {
             state.map = map;
             ensureAirspacePanes();

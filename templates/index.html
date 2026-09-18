@@ -39,6 +39,7 @@
     <script src="{{ url_for('static', filename='js/habitat.js') }}"></script>
     <script src="{{ url_for('static', filename='js/sondehub.js') }}"></script>
     <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/map_panes.js') }}"></script>
     <script src="{{ url_for('static', filename='js/overlays.js') }}"></script>
     <script src="{{ url_for('static', filename='js/tables.js') }}"></script>
     <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
@@ -849,11 +850,7 @@
             if (window.UIPersist) {
                 UIPersist.restoreRadioGroup('autoFollow', 'autoFollow');
 
-                var airspaceIds = [
-                    'toggle-airspace', 'toggle-class-b', 'toggle-class-c',
-                    'toggle-class-d', 'toggle-class-e', 'toggle-sua',
-                    'toggle-tfr', 'toggle-parcels'
-                ];
+                var airspaceIds = ['toggle-airspace'].concat(RecoveryOverlays.toggleIds(), ['toggle-parcels']);
                 airspaceIds.forEach(function (id) {
                     UIPersist.restoreCheckbox(id, id);
                 });
@@ -1415,27 +1412,27 @@
                 <div style="margin-left: 1.25em;">
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-class-b">
-                        <label class="form-check-label" for="toggle-class-b"><span style="color:#1f4ed8;">&#9632;</span> Class B</label>
+                        <label class="form-check-label" for="toggle-class-b"><span class="airspace-swatch" data-layer="class_b">&#9632;</span> Class B</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-class-c">
-                        <label class="form-check-label" for="toggle-class-c"><span style="color:#7c3aed;">&#9632;</span> Class C</label>
+                        <label class="form-check-label" for="toggle-class-c"><span class="airspace-swatch" data-layer="class_c">&#9632;</span> Class C</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-class-d">
-                        <label class="form-check-label" for="toggle-class-d"><span style="color:#0ea5e9;">&#9632;</span> Class D</label>
+                        <label class="form-check-label" for="toggle-class-d"><span class="airspace-swatch" data-layer="class_d">&#9632;</span> Class D</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-class-e">
-                        <label class="form-check-label" for="toggle-class-e"><span style="color:#64748b;">&#9632;</span> Class E</label>
+                        <label class="form-check-label" for="toggle-class-e"><span class="airspace-swatch" data-layer="class_e">&#9632;</span> Class E</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-sua">
-                        <label class="form-check-label" for="toggle-sua"><span style="color:#dc2626;">&#9632;</span> Special Use</label>
+                        <label class="form-check-label" for="toggle-sua"><span class="airspace-swatch" data-layer="sua">&#9632;</span> Special Use</label>
                     </div>
                     <div class="form-switch form-check-reverse">
                         <input class="form-check-input" type="checkbox" role="switch" id="toggle-tfr">
-                        <label class="form-check-label" for="toggle-tfr"><span style="color:#f97316;">&#9632;</span> TFRs</label>
+                        <label class="form-check-label" for="toggle-tfr"><span class="airspace-swatch" data-layer="tfr">&#9632;</span> TFRs</label>
                     </div>
                 </div>
                 <div style="margin-top: 0.5em;">

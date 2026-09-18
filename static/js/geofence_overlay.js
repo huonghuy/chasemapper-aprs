@@ -122,7 +122,7 @@
             return;
         }
         var style = STYLE[gf.remain] || STYLE.inside;
-        state.layer = L.polygon(gf.polygon, style)
+        state.layer = L.polygon(gf.polygon, Object.assign({pane: MapPanes.geofence(state.map)}, style))
             .bindPopup(popupHtml(profile, gf))
             .addTo(state.map);
         setStatus(
@@ -275,7 +275,7 @@
         if (!state.drawPreview) {
             // <2 vertices: nothing to draw yet.
             if (latlngs.length < 2) return;
-            state.drawPreview = L.polyline(latlngs, DRAW_PREVIEW_STYLE).addTo(state.map);
+            state.drawPreview = L.polyline(latlngs, Object.assign({pane: MapPanes.geofence(state.map)}, DRAW_PREVIEW_STYLE)).addTo(state.map);
         } else {
             state.drawPreview.setLatLngs(latlngs);
         }
@@ -346,6 +346,7 @@
         var container = state.map.getContainer();
         state.savedCursor = container.style.cursor;
         container.style.cursor = "crosshair";
+        MapPanes.setDrawMode(state.map, true);
 
         state.clickHandler = function (e) { addDrawVertex(e.latlng); };
         state.map.on("click", state.clickHandler);
@@ -369,6 +370,7 @@
         var container = state.map.getContainer();
         container.style.cursor = state.savedCursor || "";
         state.savedCursor = null;
+        MapPanes.setDrawMode(state.map, false);
         state.drawing = false;
     }
 

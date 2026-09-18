@@ -281,10 +281,10 @@ def flask_airspace_refresh():
 @app.route("/airspace/<layer>")
 @require_recovery_auth
 def flask_airspace_layer(layer):
-    data = airspace_cache.get_layer_geojson(layer)
-    if data is None:
+    path = airspace_cache.get_layer_path(layer)
+    if path is None:
         return flask.jsonify({"error": "unknown or uncached layer", "layer": layer}), 404
-    response = flask.jsonify(data)
+    response = flask.send_file(path, mimetype="application/json")
     max_age = 60 if layer == "tfr" else 300
     response.headers["Cache-Control"] = "public, max-age=" + str(max_age)
     return response
@@ -1062,255 +1062,257 @@ def run_prediction():
 
     # Set the semaphore so we don't accidentally kill the predictor object while it's running.
     predictor_semaphore = True
-    _payload_list = list(current_payload_tracks.keys())
+    try:
+        _payload_list = list(current_payload_tracks.keys())
 
-    # SPOT trackers are display-only cross-reference traces. Their altitude
-    # is noisy / often 0 and would produce nonsense descent-rate and landing
-    # predictions, so skip them in the predictor loop.
-    _spot_callsigns = {
-        cs for cs, _env in chasemapper_config.get("spot_feeds", [])
-    }
+        # SPOT trackers are display-only cross-reference traces. Their altitude
+        # is noisy / often 0 and would produce nonsense descent-rate and landing
+        # predictions, so skip them in the predictor loop.
+        _spot_callsigns = {
+            cs for cs, _env in chasemapper_config.get("spot_feeds", [])
+        }
 
-    for _payload in _payload_list:
-        if _payload in _spot_callsigns:
-            logging.debug("Skipping prediction for SPOT tracker %s." % _payload)
-            continue
+        for _payload in _payload_list:
+            if _payload in _spot_callsigns:
+                logging.debug("Skipping prediction for SPOT tracker %s." % _payload)
+                continue
 
-        # Check the age of the data.
-        # No point re-running the predictor if the data is older than 30 seconds.
-        _pos_age = current_payloads[_payload]["telem"]["server_time"]
-        if (time.time() - _pos_age) > 30.0:
-            logging.debug("Skipping prediction for %s due to old data." % _payload)
-            continue
+            # Check the age of the data.
+            # No point re-running the predictor if the data is older than 30 seconds.
+            _pos_age = current_payloads[_payload]["telem"]["server_time"]
+            if (time.time() - _pos_age) > 30.0:
+                logging.debug("Skipping prediction for %s due to old data." % _payload)
+                continue
 
-        _current_pos = current_payload_tracks[_payload].get_latest_state()
-        _current_pos_list = [
-            0,
-            _current_pos["lat"],
-            _current_pos["lon"],
-            _current_pos["alt"],
-        ]
-        if current_payload_tracks[_payload].length() <= 1:
-            logging.info(
-                "Only %i point in this payload's track, skipping prediction.",
-                current_payload_tracks[_payload].length(),
-            )
-            continue
-
-        _pred_ok = False
-        _abort_pred_ok = False
-
-        if _current_pos["is_descending"]:
-            _desc_rate = _current_pos["landing_rate"]
-        else:
-            _desc_rate = chasemapper_config["pred_desc_rate"]
-
-        if _current_pos["alt"] > chasemapper_config["pred_burst"]:
-            _burst_alt = _current_pos["alt"] + 100
-        else:
-            _burst_alt = chasemapper_config["pred_burst"]
-
-        # Float (CUSF float_profile / GHOUL) applies only while ascending —
-        # once the payload is coming down we revert to standard descent so
-        # the landing point is still computed correctly.
-        _float_enabled, _float_altitude, _float_duration = _float_config()
-        _use_float = _float_enabled and not _current_pos["is_descending"]
-
-        if predictor == "Tawhiri":
-            logging.info("Requesting Prediction from Tawhiri for %s." % _payload)
-            # Tawhiri requires that the burst altitude always be higher than the starting altitude.
-            if _current_pos["is_descending"]:
-                _burst_alt = _current_pos["alt"] + 1
-
-            # Tawhiri requires that the ascent rate be > 0 for standard profiles.
-            if _current_pos["ascent_rate"] < 0.1:
-                _current_pos["ascent_rate"] = 0.1
-
-            if _use_float:
-                _eff_float_alt = _float_ceiling(_float_altitude, _current_pos["alt"])
-                _stop_dt = _current_pos["time"] + timedelta(hours=_float_duration)
+            _current_pos = current_payload_tracks[_payload].get_latest_state()
+            _current_pos_list = [
+                0,
+                _current_pos["lat"],
+                _current_pos["lon"],
+                _current_pos["alt"],
+            ]
+            if current_payload_tracks[_payload].length() <= 1:
                 logging.info(
-                    "Float-profile prediction: float_alt=%.0f m, drift until %s"
-                    % (_eff_float_alt, _stop_dt.isoformat())
+                    "Only %i point in this payload's track, skipping prediction.",
+                    current_payload_tracks[_payload].length(),
                 )
-                _tawhiri = get_tawhiri_prediction(
-                    launch_datetime=_current_pos["time"],
-                    launch_latitude=_current_pos["lat"],
-                    launch_longitude=_current_pos["lon"],
-                    launch_altitude=_current_pos["alt"],
-                    ascent_rate=_current_pos["ascent_rate"],
-                    profile="float_profile",
-                    float_altitude=_eff_float_alt,
-                    stop_datetime=_stop_dt,
-                )
-            else:
-                _tawhiri = get_tawhiri_prediction(
-                    launch_datetime=_current_pos["time"],
-                    launch_latitude=_current_pos["lat"],
-                    launch_longitude=_current_pos["lon"],
-                    launch_altitude=_current_pos["alt"],
-                    burst_altitude=_burst_alt,
-                    ascent_rate=_current_pos["ascent_rate"],
-                    descent_rate=_desc_rate,
-                )
+                continue
 
-            if _tawhiri:
-                _pred_path = _tawhiri["path"]
-                _dataset = _tawhiri["dataset"] + " (Online)"
-                if _use_float:
-                    _dataset += " [Float]"
-                # Inform the client of the dataset age
-                flask_emit_event("predictor_model_update", {"model": _dataset})
-
-            else:
-                _pred_path = []
-
-        else:
-            logging.info("Running Offline Predictor for %s." % _payload)
-            if _use_float:
-                logging.warning(
-                    "Float mode enabled but offline predictor doesn't support "
-                    "float_profile; falling back to burst at float altitude."
-                )
-                _offline_burst = _offline_float_burst(
-                    _float_altitude, _current_pos["alt"]
-                )
-            else:
-                _offline_burst = _burst_alt
-            _pred_path = predictor.predict(
-                launch_lat=_current_pos["lat"],
-                launch_lon=_current_pos["lon"],
-                launch_alt=_current_pos["alt"],
-                ascent_rate=_current_pos["ascent_rate"],
-                descent_rate=_desc_rate,
-                burst_alt=_offline_burst,
-                launch_time=_current_pos["time"],
-                descent_mode=_current_pos["is_descending"],
-            )
-
-        if len(_pred_path) > 1:
-            # Valid Prediction!
-            _pred_path.insert(0, _current_pos_list)
-            # Convert from predictor output format to a polyline.
-            _pred_output = []
-            for _point in _pred_path:
-                _pred_output.append([_point[1], _point[2], _point[3]])
-
-            current_payloads[_payload]["pred_path"] = _pred_output
-            current_payloads[_payload]["pred_landing"] = _pred_output[-1]
+            _pred_ok = False
+            _abort_pred_ok = False
 
             if _current_pos["is_descending"]:
-                current_payloads[_payload]["burst"] = []
+                _desc_rate = _current_pos["landing_rate"]
             else:
-                # Determine the burst position.
-                _cur_alt = 0.0
-                _cur_idx = 0
-                for i in range(len(_pred_output)):
-                    if _pred_output[i][2] > _cur_alt:
-                        _cur_alt = _pred_output[i][2]
-                        _cur_idx = i
+                _desc_rate = chasemapper_config["pred_desc_rate"]
 
-                current_payloads[_payload]["burst"] = _pred_output[_cur_idx]
+            if _current_pos["alt"] > chasemapper_config["pred_burst"]:
+                _burst_alt = _current_pos["alt"] + 100
+            else:
+                _burst_alt = chasemapper_config["pred_burst"]
 
-            _pred_ok = True
-            logging.info("Prediction Updated, %d data points." % len(_pred_path))
-        else:
-            current_payloads[_payload]["pred_path"] = []
-            current_payloads[_payload]["pred_landing"] = []
-            current_payloads[_payload]["burst"] = []
-            logging.error("Prediction Failed, possible invalid or missing dataset.")
-            flask_emit_event("predictor_model_update", {"model": "Dataset invalid."})
-
-        # Abort predictions
-        if (
-            chasemapper_config["show_abort"]
-            and (_current_pos["alt"] < chasemapper_config["pred_burst"])
-            and (_current_pos["is_descending"] == False)
-        ):
+            # Float (CUSF float_profile / GHOUL) applies only while ascending —
+            # once the payload is coming down we revert to standard descent so
+            # the landing point is still computed correctly.
+            _float_enabled, _float_altitude, _float_duration = _float_config()
+            _use_float = _float_enabled and not _current_pos["is_descending"]
 
             if predictor == "Tawhiri":
-                logging.info(
-                    "Requesting Abort Prediction from Tawhiri for %s." % _payload
-                )
+                logging.info("Requesting Prediction from Tawhiri for %s." % _payload)
+                # Tawhiri requires that the burst altitude always be higher than the starting altitude.
+                if _current_pos["is_descending"]:
+                    _burst_alt = _current_pos["alt"] + 1
 
                 # Tawhiri requires that the ascent rate be > 0 for standard profiles.
                 if _current_pos["ascent_rate"] < 0.1:
                     _current_pos["ascent_rate"] = 0.1
 
-                _tawhiri = get_tawhiri_prediction(
-                    launch_datetime=_current_pos["time"],
-                    launch_latitude=_current_pos["lat"],
-                    launch_longitude=_current_pos["lon"],
-                    launch_altitude=_current_pos["alt"],
-                    burst_altitude=_current_pos["alt"] + 200,
-                    ascent_rate=_current_pos["ascent_rate"],
-                    descent_rate=_desc_rate,
-                )
+                if _use_float:
+                    _eff_float_alt = _float_ceiling(_float_altitude, _current_pos["alt"])
+                    _stop_dt = _current_pos["time"] + timedelta(hours=_float_duration)
+                    logging.info(
+                        "Float-profile prediction: float_alt=%.0f m, drift until %s"
+                        % (_eff_float_alt, _stop_dt.isoformat())
+                    )
+                    _tawhiri = get_tawhiri_prediction(
+                        launch_datetime=_current_pos["time"],
+                        launch_latitude=_current_pos["lat"],
+                        launch_longitude=_current_pos["lon"],
+                        launch_altitude=_current_pos["alt"],
+                        ascent_rate=_current_pos["ascent_rate"],
+                        profile="float_profile",
+                        float_altitude=_eff_float_alt,
+                        stop_datetime=_stop_dt,
+                    )
+                else:
+                    _tawhiri = get_tawhiri_prediction(
+                        launch_datetime=_current_pos["time"],
+                        launch_latitude=_current_pos["lat"],
+                        launch_longitude=_current_pos["lon"],
+                        launch_altitude=_current_pos["alt"],
+                        burst_altitude=_burst_alt,
+                        ascent_rate=_current_pos["ascent_rate"],
+                        descent_rate=_desc_rate,
+                    )
 
                 if _tawhiri:
-                    _abort_pred_path = _tawhiri["path"]
+                    _pred_path = _tawhiri["path"]
+                    _dataset = _tawhiri["dataset"] + " (Online)"
+                    if _use_float:
+                        _dataset += " [Float]"
+                    # Inform the client of the dataset age
+                    flask_emit_event("predictor_model_update", {"model": _dataset})
 
                 else:
-                    _abort_pred_path = []
+                    _pred_path = []
 
             else:
-                logging.info("Running Offline Abort Predictor for: %s." % _payload)
-
-                _abort_pred_path = predictor.predict(
+                logging.info("Running Offline Predictor for %s." % _payload)
+                if _use_float:
+                    logging.warning(
+                        "Float mode enabled but offline predictor doesn't support "
+                        "float_profile; falling back to burst at float altitude."
+                    )
+                    _offline_burst = _offline_float_burst(
+                        _float_altitude, _current_pos["alt"]
+                    )
+                else:
+                    _offline_burst = _burst_alt
+                _pred_path = predictor.predict(
                     launch_lat=_current_pos["lat"],
                     launch_lon=_current_pos["lon"],
                     launch_alt=_current_pos["alt"],
                     ascent_rate=_current_pos["ascent_rate"],
                     descent_rate=_desc_rate,
-                    burst_alt=_current_pos["alt"] + 200,
+                    burst_alt=_offline_burst,
                     launch_time=_current_pos["time"],
                     descent_mode=_current_pos["is_descending"],
                 )
 
-            if len(_abort_pred_path) > 1:
+            if len(_pred_path) > 1:
                 # Valid Prediction!
-                _abort_pred_path.insert(0, _current_pos_list)
+                _pred_path.insert(0, _current_pos_list)
                 # Convert from predictor output format to a polyline.
-                _abort_pred_output = []
-                for _point in _abort_pred_path:
-                    _abort_pred_output.append([_point[1], _point[2], _point[3]])
+                _pred_output = []
+                for _point in _pred_path:
+                    _pred_output.append([_point[1], _point[2], _point[3]])
 
-                current_payloads[_payload]["abort_path"] = _abort_pred_output
-                current_payloads[_payload]["abort_landing"] = _abort_pred_output[-1]
+                current_payloads[_payload]["pred_path"] = _pred_output
+                current_payloads[_payload]["pred_landing"] = _pred_output[-1]
 
-                _abort_pred_ok = True
-                logging.info(
-                    "Abort Prediction Updated, %d data points." % len(_abort_pred_path)
-                )
+                if _current_pos["is_descending"]:
+                    current_payloads[_payload]["burst"] = []
+                else:
+                    # Determine the burst position.
+                    _cur_alt = 0.0
+                    _cur_idx = 0
+                    for i in range(len(_pred_output)):
+                        if _pred_output[i][2] > _cur_alt:
+                            _cur_alt = _pred_output[i][2]
+                            _cur_idx = i
+
+                    current_payloads[_payload]["burst"] = _pred_output[_cur_idx]
+
+                _pred_ok = True
+                logging.info("Prediction Updated, %d data points." % len(_pred_path))
             else:
-                current_payloads[_payload]["abort_path"] = []
-                current_payloads[_payload]["abort_landing"] = []
+                current_payloads[_payload]["pred_path"] = []
+                current_payloads[_payload]["pred_landing"] = []
+                current_payloads[_payload]["burst"] = []
                 logging.error("Prediction Failed, possible invalid or missing dataset.")
                 flask_emit_event("predictor_model_update", {"model": "Dataset invalid."})
-        else:
-            # Zero the abort path and landing
-            current_payloads[_payload]["abort_path"] = []
-            current_payloads[_payload]["abort_landing"] = []
 
-        # Send the web client the updated prediction data.
-        if _pred_ok or _abort_pred_ok:
-            _client_data = {
-                "callsign": _payload,
-                "pred_path": current_payloads[_payload]["pred_path"],
-                "pred_landing": current_payloads[_payload]["pred_landing"],
-                "burst": current_payloads[_payload]["burst"],
-                "abort_path": current_payloads[_payload]["abort_path"],
-                "abort_landing": current_payloads[_payload]["abort_landing"],
-            }
-            flask_emit_event("predictor_update", _client_data)
-            _lock_launch_preview_for_live_prediction(_payload)
+            # Abort predictions
+            if (
+                chasemapper_config["show_abort"]
+                and (_current_pos["alt"] < chasemapper_config["pred_burst"])
+                and (_current_pos["is_descending"] == False)
+            ):
 
-            # Add the prediction run to the logger.
-            if chase_logger:
-                chase_logger.add_balloon_prediction(_client_data)
+                if predictor == "Tawhiri":
+                    logging.info(
+                        "Requesting Abort Prediction from Tawhiri for %s." % _payload
+                    )
 
-    # Clear the predictor-running semaphore
-    predictor_semaphore = False
+                    # Tawhiri requires that the ascent rate be > 0 for standard profiles.
+                    if _current_pos["ascent_rate"] < 0.1:
+                        _current_pos["ascent_rate"] = 0.1
+
+                    _tawhiri = get_tawhiri_prediction(
+                        launch_datetime=_current_pos["time"],
+                        launch_latitude=_current_pos["lat"],
+                        launch_longitude=_current_pos["lon"],
+                        launch_altitude=_current_pos["alt"],
+                        burst_altitude=_current_pos["alt"] + 200,
+                        ascent_rate=_current_pos["ascent_rate"],
+                        descent_rate=_desc_rate,
+                    )
+
+                    if _tawhiri:
+                        _abort_pred_path = _tawhiri["path"]
+
+                    else:
+                        _abort_pred_path = []
+
+                else:
+                    logging.info("Running Offline Abort Predictor for: %s." % _payload)
+
+                    _abort_pred_path = predictor.predict(
+                        launch_lat=_current_pos["lat"],
+                        launch_lon=_current_pos["lon"],
+                        launch_alt=_current_pos["alt"],
+                        ascent_rate=_current_pos["ascent_rate"],
+                        descent_rate=_desc_rate,
+                        burst_alt=_current_pos["alt"] + 200,
+                        launch_time=_current_pos["time"],
+                        descent_mode=_current_pos["is_descending"],
+                    )
+
+                if len(_abort_pred_path) > 1:
+                    # Valid Prediction!
+                    _abort_pred_path.insert(0, _current_pos_list)
+                    # Convert from predictor output format to a polyline.
+                    _abort_pred_output = []
+                    for _point in _abort_pred_path:
+                        _abort_pred_output.append([_point[1], _point[2], _point[3]])
+
+                    current_payloads[_payload]["abort_path"] = _abort_pred_output
+                    current_payloads[_payload]["abort_landing"] = _abort_pred_output[-1]
+
+                    _abort_pred_ok = True
+                    logging.info(
+                        "Abort Prediction Updated, %d data points." % len(_abort_pred_path)
+                    )
+                else:
+                    current_payloads[_payload]["abort_path"] = []
+                    current_payloads[_payload]["abort_landing"] = []
+                    logging.error("Prediction Failed, possible invalid or missing dataset.")
+                    flask_emit_event("predictor_model_update", {"model": "Dataset invalid."})
+            else:
+                # Zero the abort path and landing
+                current_payloads[_payload]["abort_path"] = []
+                current_payloads[_payload]["abort_landing"] = []
+
+            # Send the web client the updated prediction data.
+            if _pred_ok or _abort_pred_ok:
+                _client_data = {
+                    "callsign": _payload,
+                    "pred_path": current_payloads[_payload]["pred_path"],
+                    "pred_landing": current_payloads[_payload]["pred_landing"],
+                    "burst": current_payloads[_payload]["burst"],
+                    "abort_path": current_payloads[_payload]["abort_path"],
+                    "abort_landing": current_payloads[_payload]["abort_landing"],
+                }
+                flask_emit_event("predictor_update", _client_data)
+                _lock_launch_preview_for_live_prediction(_payload)
+
+                # Add the prediction run to the logger.
+                if chase_logger:
+                    chase_logger.add_balloon_prediction(_client_data)
+
+        # Clear the predictor-running semaphore
+    finally:
+        predictor_semaphore = False
 
 
 def initPredictor():
