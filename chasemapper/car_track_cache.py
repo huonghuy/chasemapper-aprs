@@ -125,7 +125,6 @@ def _load_from_disk():
 
 def add_point(lat, lon, alt=0.0, heading=0.0):
     """Append a chase-car position. Throttled disk writes; day-rolls if needed."""
-    global _day_key, _last_write
     with _lock:
         if _day_key != _today_utc():
             _rollover_locked("UTC day rollover")
@@ -168,7 +167,6 @@ def clear():
 
 def _rollover_loop():
     """Once a minute, check for UTC day rollover; if so, wipe."""
-    global _day_key
     while True:
         time.sleep(60)
         try:

@@ -7,22 +7,12 @@
 #   Released under GNU GPL v3 or later
 #
 import chasemapper
-import datetime
 import logging
 import requests
 import time
-import traceback
 import json
-from base64 import b64encode
-from hashlib import sha256
 from threading import Thread, Lock
 
-try:
-    # Python 2
-    from Queue import Queue
-except ImportError:
-    # Python 3
-    from queue import Queue
 
 
 class SondehubChaseUploader(object):
@@ -138,7 +128,6 @@ class SondehubChaseUploader(object):
         _retries = 0
         _upload_success = False
 
-        _start_time = time.time()
 
         while _retries < self.upload_retries:
             # Run the request.
@@ -160,7 +149,6 @@ class SondehubChaseUploader(object):
 
             if _req.status_code == 200:
                 # 200 is the only status code that we accept.
-                _upload_time = time.time() - _start_time
                 logging.debug("Sondehub - Uploaded chase-car position to Sondehub.")
                 _upload_success = True
                 break
@@ -203,7 +191,6 @@ class SondehubChaseUploader(object):
         _retries = 0
         _upload_success = False
 
-        _start_time = time.time()
 
         while _retries < self.upload_retries:
             # Run the request.
@@ -225,7 +212,6 @@ class SondehubChaseUploader(object):
 
             if _req.status_code == 200:
                 # 200 is the only status code that we accept.
-                _upload_time = time.time() - _start_time
                 logging.info("Sondehub - Uploaded recovery notification to Sondehub.")
                 _upload_success = True
                 break
@@ -235,7 +221,7 @@ class SondehubChaseUploader(object):
                     _resp = json.loads(_req.text)
                     logging.info(f"Sondehub - {_resp['message']}")
                 except:
-                    logging.info(f"Sondehub - Got code 400 from Sondehub.")
+                    logging.info("Sondehub - Got code 400 from Sondehub.")
 
                 _upload_success = True
                 break

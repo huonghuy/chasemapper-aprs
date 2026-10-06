@@ -10,11 +10,7 @@
 #
 import datetime
 import logging
-import pytz
 import requests
-import subprocess
-from dateutil.parser import parse
-from threading import Thread
 
 TAWHIRI_API_URL = "http://api.v2.sondehub.org/tawhiri"
 
@@ -48,7 +44,7 @@ def get_tawhiri_prediction(
 
     # Localise supplied time to UTC if not already done
     if launch_datetime.tzinfo is None:
-        launch_datetime = pytz.utc.localize(launch_datetime)
+        launch_datetime = launch_datetime.replace(tzinfo=datetime.timezone.utc)
 
     # Create RFC3339-compliant timestamp
     _dt_rfc3339 = launch_datetime.isoformat()
@@ -77,7 +73,7 @@ def get_tawhiri_prediction(
             )
             return None
         if stop_datetime.tzinfo is None:
-            stop_datetime = pytz.utc.localize(stop_datetime)
+            stop_datetime = stop_datetime.replace(tzinfo=datetime.timezone.utc)
         _params["float_altitude"] = float_altitude
         _params["stop_datetime"] = stop_datetime.isoformat()
     else:
@@ -113,9 +109,8 @@ def get_tawhiri_prediction(
 def parse_tawhiri_data(data):
     """ Parse a returned flight trajectory from Tawhiri, and convert it to a cusf_predictor_wrapper compatible format """
 
-    _epoch = pytz.utc.localize(datetime.datetime(1970, 1, 1))
     # Extract dataset information
-    _dataset = parse(data["request"]["dataset"])
+    _dataset = datetime.datetime.fromisoformat(data["request"]["dataset"])
     _dataset = _dataset.strftime("%Y%m%d%Hz")
 
     _path = []
@@ -129,12 +124,9 @@ def parse_tawhiri_data(data):
             if _point["longitude"] > 180:
                 _point["longitude"] -= 360
 
-            # Create UTC timestamp without using datetime.timestamp(), for Python 2.7 backwards compatibility.
-            _dt = parse(_point["datetime"])
-            _dt_timestamp = (_dt - _epoch).total_seconds()
             _path.append(
                 [
-                    _dt_timestamp,
+                    datetime.datetime.fromisoformat(_point["datetime"]).timestamp(),
                     _point["latitude"],
                     _point["longitude"],
                     _point["altitude"],
@@ -147,7 +139,6 @@ def parse_tawhiri_data(data):
 
 
 if __name__ == "__main__":
-    import datetime
     import pprint
 
     logging.basicConfig(

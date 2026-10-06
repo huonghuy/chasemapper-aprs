@@ -8,7 +8,6 @@
 import math
 import traceback
 import logging
-import numpy as np
 from .atmosphere import *
 from .earthmaths import position_info
 
@@ -19,7 +18,6 @@ class GenericTrack(object):
     Telemetry is added using the add_telemetry method, which takes a dictionary with time/lat/lon/alt keys (at minimum).
     This object performs a running average of the ascent/descent rate, and calculates the predicted landing rate if the payload
     is in descent.
-    The track history can be exported to a LineString using the to_line_string method.
     """
 
     def __init__(
@@ -154,7 +152,7 @@ class GenericTrack(object):
             if len(_asc_rates) == 0:
                 return 0.0
 
-            return float(np.average(_asc_rates, weights=_weights))
+            return sum(_r * _w for _r, _w in zip(_asc_rates, _weights)) / sum(_weights)
 
     def ascent_rate_sample(self, _i):
         """ Ascent rate between track_history[_i-1] and track_history[_i], or None on a zero time-step. """
@@ -281,24 +279,6 @@ class GenericTrack(object):
         if self.is_descending:
             _current_alt = self.track_history[-1][3]
             self.landing_rate = seaLevelDescentRate(self.ascent_rate, _current_alt)
-
-    def to_polyline(self):
-        """ Generate and return a Leaflet PolyLine compatible array """
-        # Copy array into a numpy representation for easier slicing.
-        if len(self.track_history) == 0:
-            return []
-        elif len(self.track_history) == 1:
-            # LineStrings need at least 2 points. If we only have a single point,
-            # fudge it by duplicating the single point.
-            _track_data_np = np.array([self.track_history[0], self.track_history[0]])
-        else:
-            _track_data_np = np.array(self.track_history)
-        # Produce new array
-        _track_points = np.column_stack(
-            (_track_data_np[:, 1], _track_data_np[:, 2], _track_data_np[:, 3])
-        )
-
-        return _track_points.tolist()
 
     def length(self):
         return len(self.track_history)

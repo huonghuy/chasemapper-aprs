@@ -9,12 +9,7 @@ import math
 import logging
 import os
 
-try:
-    # Python 2
-    from ConfigParser import RawConfigParser
-except ImportError:
-    # Python 3
-    from configparser import RawConfigParser
+from configparser import RawConfigParser
 
 
 _INSTALL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

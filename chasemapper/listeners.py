@@ -9,7 +9,7 @@
 # 	These classes have been pulled in from the horuslib library, to avoid
 # 	requiring horuslib (hopefully soon-to-be retired) as a dependency.
 
-import socket, json, sys, traceback
+import socket, json, traceback
 from threading import Thread
 from dateutil.parser import parse
 from datetime import datetime, timedelta, timezone

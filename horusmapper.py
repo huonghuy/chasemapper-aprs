@@ -1,4 +1,4 @@
-#!/usr/bin/env python2.7
+#!/usr/bin/env python3
 #
 #   Project Horus - Browser-Based Chase Mapper
 #
@@ -7,12 +7,6 @@
 #
 import functools
 import sys
-
-# Version check.
-if sys.version_info < (3, 6):
-    print("CRITICAL - chasemapper requires Python 3.6 or newer!")
-    sys.exit(1)
-
 import hmac
 import json
 import logging
@@ -21,7 +15,6 @@ import warnings
 import flask
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import os.path
-import pytz
 import time
 import traceback
 from threading import Thread, RLock
@@ -45,12 +38,7 @@ from chasemapper.aprsis import APRSISListener
 from chasemapper.spot import SPOTListener
 from chasemapper.atmosphere import time_to_landing
 from chasemapper.listeners import OziListener, UDPListener, fix_datetime
-from chasemapper.predictor import predictor_spawn_download, model_download_running
-from chasemapper.habitat import (
-    HabitatChaseUploader,
-    initListenerCallsign,
-    uploadListenerPosition,
-)
+from chasemapper.predictor import predictor_spawn_download
 from chasemapper.sondehub import SondehubChaseUploader
 from chasemapper.logger import ChaseLogger
 from chasemapper.logread import read_last_balloon_telemetry, read_file as read_chase_log
@@ -217,7 +205,6 @@ def flask_get_server_time():
 @app.route("/tiles/<path:filename>")
 def flask_server_tiles(filename):
     """ Serve up a file from the tile server location """
-    global map_settings
     if map_settings["tile_server_enabled"]:
         return flask.send_from_directory(map_settings["tile_server_path"], filename)
     else:
@@ -227,7 +214,6 @@ def flask_server_tiles(filename):
 @app.route("/overlays/kml/<overlay_id>")
 def flask_server_kml_overlay(overlay_id):
     """ Serve up a configured KML overlay file. """
-    global kml_overlay_settings
 
     _overlay = kml_overlay_settings.get(str(overlay_id))
     if _overlay is None:
@@ -368,7 +354,6 @@ def flask_upload_geofence(profile_id):
     Either way, any previous geofence on this profile is moved to
     trash, so the user can hit Restore to undo the change.
     """
-    global geofence_store
 
     # Decide which body shape we got. JSON when explicitly typed as
     # such, or when there's no multipart KML and the body looks like
@@ -430,7 +415,6 @@ def flask_upload_geofence(profile_id):
 @require_recovery_auth
 @require_known_profile
 def flask_clear_geofence(profile_id):
-    global geofence_store
 
     cleared = geofence_mod.clear_profile_geofence(geofence_store, profile_id)
     if cleared:
@@ -451,7 +435,6 @@ def flask_restore_geofence(profile_id):
     """Reinstate the most recently cleared/overwritten geofence for a
     profile. The currently-active geofence (if any) is itself moved to
     trash, so the restore is undoable."""
-    global geofence_store
 
     restored = geofence_mod.restore_latest(geofence_store, profile_id)
     if not restored:
@@ -840,7 +823,6 @@ def on_client_disconnect(*args):
 
 def sync_bearing_store_time_seq():
     """Keep the bearing handler aligned with server-authoritative time-sequence settings."""
-    global bearing_store, chasemapper_config
 
     if bearing_store is None:
         return
@@ -855,7 +837,6 @@ def sync_bearing_store_time_seq():
 
 def sync_bearing_store_confidence_threshold():
     """Keep the bearing handler aligned with server-authoritative confidence settings."""
-    global bearing_store, chasemapper_config
 
     if bearing_store is None:
         return
@@ -945,7 +926,6 @@ def client_settings_update(data):
 
 @socketio.on("time_seq_update", namespace="/chasemapper")
 def time_seq_update(data):
-    global chasemapper_config
 
     if "active" in data:
         try:
@@ -1212,72 +1192,86 @@ def _offline_float_burst(float_altitude, current_altitude):
     return max(float_altitude, current_altitude + 100.0)
 
 
-def _calculate_launch_preview(car_state, ascent_rate):
-    """Run one prediction without adding a synthetic payload track."""
-    launch_time = datetime.now(UTC)
-    launch_altitude = float(car_state["alt"])
-    burst_altitude = max(
-        float(chasemapper_config["pred_burst"]), launch_altitude + 100.0
-    )
-    descent_rate = float(chasemapper_config["pred_desc_rate"])
-    float_enabled, float_altitude, float_duration = _float_config()
+def _run_predictor(lat, lon, alt, launch_time, ascent_rate, descent_rate, burst_alt, use_float=False, descent_mode=False):
+    """Run one prediction on the active predictor.
+
+    Returns (path, dataset): path is a list of [time, lat, lon, alt], empty on
+    failure; dataset is the Tawhiri model name, or None for the offline predictor.
+    """
+    _, float_altitude, float_duration = _float_config()
 
     if predictor == "Tawhiri":
-        if float_enabled:
-            effective_float_altitude = _float_ceiling(float_altitude, launch_altitude)
+        if use_float:
             prediction = get_tawhiri_prediction(
                 launch_datetime=launch_time,
-                launch_latitude=car_state["lat"],
-                launch_longitude=car_state["lon"],
-                launch_altitude=launch_altitude,
+                launch_latitude=lat,
+                launch_longitude=lon,
+                launch_altitude=alt,
                 ascent_rate=ascent_rate,
                 profile="float_profile",
-                float_altitude=effective_float_altitude,
+                float_altitude=_float_ceiling(float_altitude, alt),
                 stop_datetime=launch_time + timedelta(hours=float_duration),
             )
         else:
             prediction = get_tawhiri_prediction(
                 launch_datetime=launch_time,
-                launch_latitude=car_state["lat"],
-                launch_longitude=car_state["lon"],
-                launch_altitude=launch_altitude,
-                burst_altitude=burst_altitude,
+                launch_latitude=lat,
+                launch_longitude=lon,
+                launch_altitude=alt,
+                burst_altitude=burst_alt,
                 ascent_rate=ascent_rate,
                 descent_rate=descent_rate,
             )
-        prediction_path = prediction["path"] if prediction else []
-    else:
-        offline_burst = (
-            _offline_float_burst(float_altitude, launch_altitude)
-            if float_enabled
-            else burst_altitude
+        if not prediction:
+            return [], None
+        return prediction["path"], prediction["dataset"]
+
+    if use_float:
+        logging.warning(
+            "Float mode enabled but offline predictor doesn't support "
+            "float_profile; falling back to burst at float altitude."
         )
-        prediction_path = predictor.predict(
-            launch_lat=car_state["lat"],
-            launch_lon=car_state["lon"],
-            launch_alt=launch_altitude,
-            ascent_rate=ascent_rate,
-            descent_rate=descent_rate,
-            burst_alt=offline_burst,
-            launch_time=launch_time,
-            descent_mode=False,
-        )
+        burst_alt = _offline_float_burst(float_altitude, alt)
+    path = predictor.predict(
+        launch_lat=lat,
+        launch_lon=lon,
+        launch_alt=alt,
+        ascent_rate=ascent_rate,
+        descent_rate=descent_rate,
+        burst_alt=burst_alt,
+        launch_time=launch_time,
+        descent_mode=descent_mode,
+    )
+    return path, None
+
+
+def _to_polyline(lat, lon, alt, path):
+    """Predictor output as a [lat, lon, alt] polyline starting at the current position."""
+    return [[lat, lon, alt]] + [[_p[1], _p[2], _p[3]] for _p in path]
+
+
+def _calculate_launch_preview(car_state, ascent_rate):
+    """Run one prediction without adding a synthetic payload track."""
+    launch_altitude = float(car_state["alt"])
+    prediction_path, _ = _run_predictor(
+        car_state["lat"],
+        car_state["lon"],
+        launch_altitude,
+        datetime.now(UTC),
+        ascent_rate,
+        float(chasemapper_config["pred_desc_rate"]),
+        max(float(chasemapper_config["pred_burst"]), launch_altitude + 100.0),
+        use_float=_float_config()[0],
+    )
 
     if len(prediction_path) <= 1:
         return None
 
-    prediction_path.insert(
-        0,
-        [0, car_state["lat"], car_state["lon"], launch_altitude],
-    )
-    output_path = [
-        [point[1], point[2], point[3]] for point in prediction_path
-    ]
-    burst = max(output_path, key=lambda point: point[2])
+    output_path = _to_polyline(car_state["lat"], car_state["lon"], launch_altitude, prediction_path)
     return {
         "pred_path": output_path,
         "pred_landing": output_path[-1],
-        "burst": burst,
+        "burst": max(output_path, key=lambda point: point[2]),
     }
 
 
@@ -1377,7 +1371,6 @@ def launch_preview_request(data):
 
 def predictorThread():
     """ Run the predictor on a regular interval """
-    global predictor_thread_running, chasemapper_config
     logging.info("Predictor loop started.")
 
     while predictor_thread_running:
@@ -1395,7 +1388,7 @@ def predictorThread():
 
 def fallback_to_tawhiri(reason):
     """ Fall back to online (Tawhiri) predictions, e.g. if GFS data is missing, stale, or failed to download. """
-    global predictor, predictor_thread, predictor_model_end, chasemapper_config
+    global predictor, predictor_thread, predictor_model_end
 
     logging.warning("Falling back to online (Tawhiri) predictions - %s." % reason)
     predictor = "Tawhiri"
@@ -1414,7 +1407,7 @@ def fallback_to_tawhiri(reason):
 
 def run_prediction():
     """ Run a Flight Path prediction """
-    global chasemapper_config, current_payloads, current_payload_tracks, predictor, predictor_semaphore, predictor_model_end
+    global predictor_semaphore
 
     if chasemapper_config["pred_enabled"] == False:
         return
@@ -1459,12 +1452,6 @@ def run_prediction():
                 continue
 
             _current_pos = current_payload_tracks[_payload].get_latest_state()
-            _current_pos_list = [
-                0,
-                _current_pos["lat"],
-                _current_pos["lon"],
-                _current_pos["alt"],
-            ]
             if current_payload_tracks[_payload].length() <= 1:
                 logging.info(
                     "Only %i point in this payload's track, skipping prediction.",
@@ -1488,11 +1475,9 @@ def run_prediction():
             # Float (CUSF float_profile / GHOUL) applies only while ascending —
             # once the payload is coming down we revert to standard descent so
             # the landing point is still computed correctly.
-            _float_enabled, _float_altitude, _float_duration = _float_config()
-            _use_float = _float_enabled and not _current_pos["is_descending"]
+            _use_float = _float_config()[0] and not _current_pos["is_descending"]
 
             if predictor == "Tawhiri":
-                logging.info("Requesting Prediction from Tawhiri for %s." % _payload)
                 # Tawhiri requires that the burst altitude always be higher than the starting altitude.
                 if _current_pos["is_descending"]:
                     _burst_alt = _current_pos["alt"] + 1
@@ -1501,94 +1486,38 @@ def run_prediction():
                 if _current_pos["ascent_rate"] < 0.1:
                     _current_pos["ascent_rate"] = 0.1
 
+            _pos = (_current_pos["lat"], _current_pos["lon"], _current_pos["alt"])
+
+            logging.info("Running prediction for %s." % _payload)
+            _pred_path, _dataset = _run_predictor(
+                *_pos,
+                _current_pos["time"],
+                _current_pos["ascent_rate"],
+                _desc_rate,
+                _burst_alt,
+                use_float=_use_float,
+                descent_mode=_current_pos["is_descending"],
+            )
+            if _dataset:
+                # Inform the client of the dataset age
+                _dataset += " (Online)"
                 if _use_float:
-                    _eff_float_alt = _float_ceiling(_float_altitude, _current_pos["alt"])
-                    _stop_dt = _current_pos["time"] + timedelta(hours=_float_duration)
-                    logging.info(
-                        "Float-profile prediction: float_alt=%.0f m, drift until %s"
-                        % (_eff_float_alt, _stop_dt.isoformat())
-                    )
-                    _tawhiri = get_tawhiri_prediction(
-                        launch_datetime=_current_pos["time"],
-                        launch_latitude=_current_pos["lat"],
-                        launch_longitude=_current_pos["lon"],
-                        launch_altitude=_current_pos["alt"],
-                        ascent_rate=_current_pos["ascent_rate"],
-                        profile="float_profile",
-                        float_altitude=_eff_float_alt,
-                        stop_datetime=_stop_dt,
-                    )
-                else:
-                    _tawhiri = get_tawhiri_prediction(
-                        launch_datetime=_current_pos["time"],
-                        launch_latitude=_current_pos["lat"],
-                        launch_longitude=_current_pos["lon"],
-                        launch_altitude=_current_pos["alt"],
-                        burst_altitude=_burst_alt,
-                        ascent_rate=_current_pos["ascent_rate"],
-                        descent_rate=_desc_rate,
-                    )
-
-                if _tawhiri:
-                    _pred_path = _tawhiri["path"]
-                    _dataset = _tawhiri["dataset"] + " (Online)"
-                    if _use_float:
-                        _dataset += " [Float]"
-                    # Inform the client of the dataset age
-                    flask_emit_event("predictor_model_update", {"model": _dataset})
-
-                else:
-                    _pred_path = []
-
-            else:
-                logging.info("Running Offline Predictor for %s." % _payload)
-                if _use_float:
-                    logging.warning(
-                        "Float mode enabled but offline predictor doesn't support "
-                        "float_profile; falling back to burst at float altitude."
-                    )
-                    _offline_burst = _offline_float_burst(
-                        _float_altitude, _current_pos["alt"]
-                    )
-                else:
-                    _offline_burst = _burst_alt
-                _pred_path = predictor.predict(
-                    launch_lat=_current_pos["lat"],
-                    launch_lon=_current_pos["lon"],
-                    launch_alt=_current_pos["alt"],
-                    ascent_rate=_current_pos["ascent_rate"],
-                    descent_rate=_desc_rate,
-                    burst_alt=_offline_burst,
-                    launch_time=_current_pos["time"],
-                    descent_mode=_current_pos["is_descending"],
-                )
+                    _dataset += " [Float]"
+                flask_emit_event("predictor_model_update", {"model": _dataset})
 
             if len(_pred_path) > 1:
                 # Valid Prediction!
-                _pred_path.insert(0, _current_pos_list)
-                # Convert from predictor output format to a polyline.
-                _pred_output = []
-                for _point in _pred_path:
-                    _pred_output.append([_point[1], _point[2], _point[3]])
-
+                _pred_output = _to_polyline(*_pos, _pred_path)
                 current_payloads[_payload]["pred_path"] = _pred_output
                 current_payloads[_payload]["pred_landing"] = _pred_output[-1]
 
                 if _current_pos["is_descending"]:
                     current_payloads[_payload]["burst"] = []
                 else:
-                    # Determine the burst position.
-                    _cur_alt = 0.0
-                    _cur_idx = 0
-                    for i in range(len(_pred_output)):
-                        if _pred_output[i][2] > _cur_alt:
-                            _cur_alt = _pred_output[i][2]
-                            _cur_idx = i
-
-                    current_payloads[_payload]["burst"] = _pred_output[_cur_idx]
+                    current_payloads[_payload]["burst"] = max(_pred_output, key=lambda _p: _p[2])
 
                 _pred_ok = True
-                logging.info("Prediction Updated, %d data points." % len(_pred_path))
+                logging.info("Prediction Updated, %d data points." % len(_pred_output))
             else:
                 current_payloads[_payload]["pred_path"] = []
                 current_payloads[_payload]["pred_landing"] = []
@@ -1597,75 +1526,35 @@ def run_prediction():
                 flask_emit_event("predictor_model_update", {"model": "Dataset invalid."})
 
             # Abort predictions
+            current_payloads[_payload]["abort_path"] = []
+            current_payloads[_payload]["abort_landing"] = []
             if (
                 chasemapper_config["show_abort"]
                 and (_current_pos["alt"] < chasemapper_config["pred_burst"])
                 and (_current_pos["is_descending"] == False)
             ):
-
-                if predictor == "Tawhiri":
-                    logging.info(
-                        "Requesting Abort Prediction from Tawhiri for %s." % _payload
-                    )
-
-                    # Tawhiri requires that the ascent rate be > 0 for standard profiles.
-                    if _current_pos["ascent_rate"] < 0.1:
-                        _current_pos["ascent_rate"] = 0.1
-
-                    _tawhiri = get_tawhiri_prediction(
-                        launch_datetime=_current_pos["time"],
-                        launch_latitude=_current_pos["lat"],
-                        launch_longitude=_current_pos["lon"],
-                        launch_altitude=_current_pos["alt"],
-                        burst_altitude=_current_pos["alt"] + 200,
-                        ascent_rate=_current_pos["ascent_rate"],
-                        descent_rate=_desc_rate,
-                    )
-
-                    if _tawhiri:
-                        _abort_pred_path = _tawhiri["path"]
-
-                    else:
-                        _abort_pred_path = []
-
-                else:
-                    logging.info("Running Offline Abort Predictor for: %s." % _payload)
-
-                    _abort_pred_path = predictor.predict(
-                        launch_lat=_current_pos["lat"],
-                        launch_lon=_current_pos["lon"],
-                        launch_alt=_current_pos["alt"],
-                        ascent_rate=_current_pos["ascent_rate"],
-                        descent_rate=_desc_rate,
-                        burst_alt=_current_pos["alt"] + 200,
-                        launch_time=_current_pos["time"],
-                        descent_mode=_current_pos["is_descending"],
-                    )
+                logging.info("Running abort prediction for %s." % _payload)
+                _abort_pred_path, _ = _run_predictor(
+                    *_pos,
+                    _current_pos["time"],
+                    _current_pos["ascent_rate"],
+                    _desc_rate,
+                    _current_pos["alt"] + 200,
+                )
 
                 if len(_abort_pred_path) > 1:
                     # Valid Prediction!
-                    _abort_pred_path.insert(0, _current_pos_list)
-                    # Convert from predictor output format to a polyline.
-                    _abort_pred_output = []
-                    for _point in _abort_pred_path:
-                        _abort_pred_output.append([_point[1], _point[2], _point[3]])
-
+                    _abort_pred_output = _to_polyline(*_pos, _abort_pred_path)
                     current_payloads[_payload]["abort_path"] = _abort_pred_output
                     current_payloads[_payload]["abort_landing"] = _abort_pred_output[-1]
 
                     _abort_pred_ok = True
                     logging.info(
-                        "Abort Prediction Updated, %d data points." % len(_abort_pred_path)
+                        "Abort Prediction Updated, %d data points." % len(_abort_pred_output)
                     )
                 else:
-                    current_payloads[_payload]["abort_path"] = []
-                    current_payloads[_payload]["abort_landing"] = []
                     logging.error("Prediction Failed, possible invalid or missing dataset.")
                     flask_emit_event("predictor_model_update", {"model": "Dataset invalid."})
-            else:
-                # Zero the abort path and landing
-                current_payloads[_payload]["abort_path"] = []
-                current_payloads[_payload]["abort_landing"] = []
 
             # Send the web client the updated prediction data.
             if _pred_ok or _abort_pred_ok:
@@ -1694,7 +1583,7 @@ def run_prediction():
 
 
 def initPredictor():
-    global predictor, predictor_thread, predictor_model_end, chasemapper_config, pred_settings
+    global predictor, predictor_thread, predictor_model_end
 
     if chasemapper_config["offline_predictions"]:
         # Attempt to initialize an Offline Predictor instance
@@ -1757,7 +1646,6 @@ def initPredictor():
 
 def model_download_finished(result):
     """ Callback for when the model download is finished """
-    global chasemapper_config, predictor
     if result == "OK":
         # Downloader reported OK, restart the predictor.
         chasemapper_config["offline_predictions"] = True
@@ -1771,48 +1659,31 @@ def model_download_finished(result):
             fallback_to_tawhiri("Model download failed")
 
 
+def _start_model_download():
+    """ Start a GFS model download, returning a status message for the client. """
+    logging.info("Web Client Initiated request for new predictor data.")
+    if pred_settings["pred_model_download"] == "none":
+        logging.info("No GFS model download command specified.")
+        return "No model download cmd."
+    return predictor_spawn_download(pred_settings["pred_model_download"], model_download_finished)
+
+
 @socketio.on("download_model", namespace="/chasemapper")
 def download_new_model(data):
     """ Trigger a download of a new weather model """
-    global pred_settings, model_download_running
-    # Don't action anything if there is a model download already running
-
-    logging.info("Web Client Initiated request for new predictor data.")
-
-    if pred_settings["pred_model_download"] == "none":
-        logging.info("No GFS model download command specified.")
-        flask_emit_event("predictor_model_update", {"model": "No model download cmd."})
-        return
-    else:
-        _model_cmd = pred_settings["pred_model_download"]
-        flask_emit_event("predictor_model_update", {"model": "Downloading Model."})
-
-        _status = predictor_spawn_download(_model_cmd, model_download_finished)
-        flask_emit_event("predictor_model_update", {"model": _status})
+    flask_emit_event("predictor_model_update", {"model": _start_model_download()})
 
 
 @app.route("/download_model")
 def download_new_model_2():
     """ Trigger a download of a new weather model via a GET request """
-    global pred_settings, model_download_running
-
-    logging.info("Web Client Initiated request for new predictor data via /download_model.")
-
-    if pred_settings["pred_model_download"] == "none":
-        logging.info("No GFS model download command specified.")
-        return "No model download cmd."
-    else:
-        _model_cmd = pred_settings["pred_model_download"]
-        _status = predictor_spawn_download(_model_cmd, model_download_finished)
-        return _status
+    return _start_model_download()
 
 
 # Data Clearing Functions
 @socketio.on("payload_data_clear", namespace="/chasemapper")
 def clear_payload_data(data):
     """ Clear the payloads belonging to the requesting viewer's profile """
-    global predictor_semaphore, current_payloads, current_payload_tracks
-    global launch_preview_locked_profiles
     _profile = _client_profile()
     logging.warning("Client requested payload data for profile %s be cleared." % _profile)
     # Wait until any current predictions have finished running.
@@ -1856,7 +1727,6 @@ def clear_car_data(data):
 @socketio.on("bearing_store_clear", namespace="/chasemapper")
 def clear_bearing_data(data):
     """ Clear all bearing data """
-    global bearing_store
     logging.warning("Client requested bearing data be cleared.")
     bearing_store.flush()
     flask_emit_event("server_bearings_cleared", {"foo":"bar"})
@@ -1865,7 +1735,6 @@ def clear_bearing_data(data):
 @socketio.on("mark_recovered", namespace="/chasemapper")
 def mark_payload_recovered(data):
     """ Mark a payload as recovered, by uploading a station position """
-    global online_uploader
 
     print(data)
 
@@ -1969,7 +1838,6 @@ def udp_listener_car_callback(data):
     """ Handle car position data """
     # TODO: Make a generic car position function, and have this function pass data into it
     # so we can add support for other chase car position inputs.
-    global car_track, online_uploader, bearing_store
     _lat = float(data["latitude"])
     _lon = float(data["longitude"])
 
@@ -2057,7 +1925,7 @@ def udp_listener_car_callback(data):
 
 
 def udp_listener_bearing_callback(data):
-    global bearing_store, bearing_mode, chase_logger
+    global bearing_mode
 
     if bearing_store != None:
         _bearing_stored = bearing_store.add_bearing(data)
@@ -2080,7 +1948,6 @@ data_monitor_thread_running = True
 
 def check_data_age():
     """ Regularly check the age of the payload data, and clear if latest position is older than X minutes."""
-    global current_payloads, chasemapper_config, predictor_semaphore
 
     while data_monitor_thread_running:
         _now = time.time()
@@ -2117,16 +1984,11 @@ def _start_online_uploader(tracker):
         logging.error(
             "Habitat uploader now deprecated due to Habitat retirement, not starting uploader."
         )
-    elif tracker == "sondehub":
+    elif tracker in ("sondehub", "sondehubamateur"):
         return SondehubChaseUploader(
             update_rate=chasemapper_config["habitat_update_rate"],
             callsign=chasemapper_config["habitat_call"],
-        )
-    elif tracker == "sondehubamateur":
-        return SondehubChaseUploader(
-            update_rate=chasemapper_config["habitat_update_rate"],
-            callsign=chasemapper_config["habitat_call"],
-            amateur=True
+            amateur=tracker == "sondehubamateur",
         )
     else:
         logging.error("Unknown Online Tracker %s, not starting uploader" % tracker)
@@ -2146,11 +2008,7 @@ def _ozi_callback(port):
 
 
 def _unique(items):
-    _seen = []
-    for _item in items:
-        if _item not in _seen:
-            _seen.append(_item)
-    return _seen
+    return list(dict.fromkeys(items))
 
 
 def start_listeners():
@@ -2169,7 +2027,7 @@ def start_listeners():
         'car_source_port' (int): Car Position source port
         'online_tracker' (str): Which online tracker to upload chase-car info to ('sondehub' or 'sondehubamateur')
     """
-    global data_listeners, current_profile, online_uploader, chasemapper_config, aprsis_listener
+    global data_listeners, current_profile, online_uploader, aprsis_listener
 
     global _spot_session
     with _spot_session_lock:
@@ -2349,7 +2207,6 @@ def _aprsis_state(profile_name):
 
 @socketio.on("aprsis_set_car_callsign", namespace="/chasemapper")
 def aprsis_set_car_callsign(data):
-    global aprsis_listener
     cs = data.get("callsign", "").strip().upper()
     p = _profile_config(_client_profile())
     if not cs or p is None:
@@ -2369,7 +2226,6 @@ def aprsis_set_car_callsign(data):
 
 @socketio.on("aprsis_add_car_callsign", namespace="/chasemapper")
 def aprsis_add_car_callsign(data):
-    global aprsis_listener
     cs = data.get("callsign", "").strip().upper()
     p = _profile_config(_client_profile())
     if not cs or p is None:
@@ -2384,7 +2240,6 @@ def aprsis_add_car_callsign(data):
 
 @socketio.on("aprsis_add_balloon_callsign", namespace="/chasemapper")
 def aprsis_add_balloon_callsign(data):
-    global aprsis_listener
     cs = data.get("callsign", "").strip().upper()
     p = _profile_config(_client_profile())
     if not cs or p is None:
@@ -2400,7 +2255,6 @@ def aprsis_add_balloon_callsign(data):
 @socketio.on("aprsis_remove_callsign", namespace="/chasemapper")
 def aprsis_remove_callsign(data):
     """Remove a callsign from the viewer's profile's car or balloon list."""
-    global aprsis_listener
     cs = data.get("callsign", "").strip().upper()
     kind = data.get("kind", "")  # "car" or "balloon"
     p = _profile_config(_client_profile())
@@ -2573,8 +2427,8 @@ if __name__ == "__main__":
     if chasemapper_config["reload_last_position"]:
         logging.info("Read in last position requested")
         try:
-            handle_new_payload_position(read_last_balloon_telemetry(), False)
-        except Exception as e:
+            handle_new_payload_position(read_last_balloon_telemetry(_chase_log_dir()), False)
+        except Exception:
             logging.warning("Unable to read in last position")
     else:
         logging.debug("Read in last position not requested")

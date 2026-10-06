@@ -16,4 +16,3 @@ numpy
 flask
 flask-socketio
 python-dateutil
-pytz

@@ -17,13 +17,10 @@ def getDensity(altitude):
     # Constants
     airMolWeight = 28.9644  # Molecular weight of air
     densitySL = 1.225  # Density at sea level [kg/m3]
-    pressureSL = 101325  # Pressure at sea level [Pa]
     temperatureSL = 288.15  # Temperature at sea level [deg K]
-    gamma = 1.4
     gravity = 9.80665  # Acceleration of gravity [m/s2]
     tempGrad = -0.0065  # Temperature gradient [deg K/m]
     RGas = 8.31432  # Gas constant [kg/Mol/K]
-    R = 287.053
     deltaTemperature = 0.0
 
     # Lookup Tables
@@ -69,8 +66,6 @@ def getDensity(altitude):
     temperature = temperature + deltaTemperature
 
     # Finally, work out the density...
-    speedOfSound = math.sqrt(gamma * R * temperature)
-    pressure = pressureRel * pressureSL
     density = densitySL * pressureRel * temperatureSL / temperature
 
     return density

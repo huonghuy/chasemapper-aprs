@@ -423,8 +423,6 @@ if __name__ == "__main__":
     # Run with: python3 -m chasemapper.gpsd 127.0.0.1 
     # or whatever IP your gpsd server is running on.
 
-    import sys
-
     def print_dict(data):
         print(data)
 

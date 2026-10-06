@@ -10,7 +10,6 @@ import logging
 import re
 import time
 import traceback
-from datetime import datetime
 from threading import Thread
 
 
@@ -321,7 +320,7 @@ if __name__ == "__main__":
     #   or
     #   $ python -m chasemapper.gps /path/to/nmea_log.txt
     #
-    import sys, time
+    import sys
 
     logging.basicConfig(
         format="%(asctime)s %(levelname)s:%(message)s", level=logging.DEBUG

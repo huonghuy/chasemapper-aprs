@@ -48,7 +48,6 @@ def predictor_download_model(command, callback):
 
 def predictor_spawn_download(command, callback=None):
     """ Spawn a model downloader in a new thread """
-    global model_download_running
 
     if model_download_running:
         return "Already Downloading."
@@ -61,20 +60,3 @@ def predictor_spawn_download(command, callback=None):
 
     return "Started downloader."
 
-
-if __name__ == "__main__":
-    import sys
-    from .config import parse_config_file
-    from cusfpredict.utils import gfs_model_age, available_gfs
-
-    _cfg_file = sys.argv[1]
-
-    _cfg = parse_config_file(_cfg_file)
-
-    if _cfg["pred_model_download"] == "none":
-        print("Model download not enabled.")
-        sys.exit(1)
-
-    predictor_download_model(_cfg["pred_model_download"])
-
-    print(available_gfs(_cfg["pred_gfs_directory"]))

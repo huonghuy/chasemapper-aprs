@@ -10,14 +10,8 @@ import json
 import logging
 import os
 import time
+from queue import Queue
 from threading import Thread, Lock
-
-try:
-    # Python 2
-    from Queue import Queue
-except ImportError:
-    # Python 3
-    from queue import Queue
 
 
 class ChaseLogger(object):
@@ -46,7 +40,7 @@ class ChaseLogger(object):
             self.f = open(self.filename, "a")
             logging.info("Logging - Opened log file %s." % self.filename)
         except Exception as e:
-            self.log_error("Logging - Could not open log file - %s" % str(e))
+            logging.error("Chase Logger - Could not open log file - %s" % str(e))
             return
 
         # Start queue processing thread.
@@ -54,77 +48,38 @@ class ChaseLogger(object):
         self.log_process_thread = Thread(target=self.process_queue)
         self.log_process_thread.start()
 
-    def add_car_position(self, data):
-        """ Log a chase car position update.
-        Input dict expected to be in the format:
-        {
-            'time'  :   _time_dt,
-            'lat'   :   _lat,
-            'lon'   :   _lon,
-            'alt'   :   _alt,
-            'comment':  _comment
-        }
-
-        """
-
-        data["log_type"] = "CAR POSITION"
+    def _enqueue(self, data, log_type):
+        """ Stamp an entry with its type and log time, and queue it for writing. """
+        data["log_type"] = log_type
         data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-        # Convert the input datetime object into a string.
-        data["time"] = data["time"].isoformat()
-
-        # Add it to the queue if we are running.
         if self.input_processing_running:
             self.input_queue.put(data)
         else:
-            self.log_error("Processing not running, discarding.")
+            logging.error("Chase Logger - Processing not running, discarding.")
+
+    def add_car_position(self, data):
+        """ Log a chase car position update: a dict with time (datetime), lat, lon, alt, comment. """
+        data["time"] = data["time"].isoformat()
+        self._enqueue(data, "CAR POSITION")
 
     def add_balloon_telemetry(self, data):
-        """ Log balloon telemetry.
-        """
-
-        data["log_type"] = "BALLOON TELEMETRY"
-        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-        # Convert the input datetime object into a string.
-        data["time"] = data["time_dt"].isoformat()
-        # Remove the time_dt element (this cannot be serialised to JSON).
-        data.pop("time_dt")
-
-        # Add it to the queue if we are running.
-        if self.input_processing_running:
-            self.input_queue.put(data)
-        else:
-            self.log_error("Processing not running, discarding.")
+        """ Log balloon telemetry. time_dt (a datetime) is stored as an ISO string under time. """
+        data["time"] = data.pop("time_dt").isoformat()
+        self._enqueue(data, "BALLOON TELEMETRY")
 
     def add_balloon_prediction(self, data):
         """ Log a prediction run """
-
-        data["log_type"] = "PREDICTION"
-        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-        # Add it to the queue if we are running.
-        if self.input_processing_running:
-            self.input_queue.put(data)
-        else:
-            self.log_error("Processing not running, discarding.")
+        self._enqueue(data, "PREDICTION")
 
     def add_bearing(self, data):
         """ Log a packet of bearing data """
-
-        data["log_type"] = "BEARING"
-        data["log_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-        # Add it to the queue if we are running.
-        if self.input_processing_running:
-            self.input_queue.put(data)
-        else:
-            self.log_error("Processing not running, discarding.")
+        self._enqueue(data, "BEARING")
 
     def process_queue(self):
         """ Process data from the input queue, and write telemetry to log files.
         """
-        self.log_info("Started Chase Logger Thread.")
+        logging.info("Chase Logger - Started Chase Logger Thread.")
 
         while self.input_processing_running:
 
@@ -138,7 +93,7 @@ class ChaseLogger(object):
                     self.f.write(_data_str + "\n")
                     _wrote = True
                 except Exception as e:
-                    self.log_error("Error processing data - %s" % str(e))
+                    logging.error("Chase Logger - Error processing data - %s" % str(e))
 
             # Flush each batch to disk. Without this, entries sit in the
             # stdio buffer until it fills (8 kB) or the file is closed,
@@ -149,7 +104,7 @@ class ChaseLogger(object):
                 try:
                     self.f.flush()
                 except Exception as e:
-                    self.log_error("Error flushing log file - %s" % str(e))
+                    logging.error("Chase Logger - Error flushing log file - %s" % str(e))
 
             self.file_lock.release()
             # Sleep while waiting for some new data.
@@ -168,27 +123,6 @@ class ChaseLogger(object):
             self.input_processing_running = False
             self.f.close()
         except Exception as e:
-            self.log_error("Error when closing - %s" % str(e))
+            logging.error("Chase Logger - Error when closing - %s" % str(e))
 
-        self.log_info("Stopped Telemetry Logger Thread.")
-
-    def log_debug(self, line):
-        """ Helper function to log a debug message with a descriptive heading. 
-        Args:
-            line (str): Message to be logged.
-        """
-        logging.debug("Chase Logger - %s" % line)
-
-    def log_info(self, line):
-        """ Helper function to log an informational message with a descriptive heading. 
-        Args:
-            line (str): Message to be logged.
-        """
-        logging.info("Chase Logger - %s" % line)
-
-    def log_error(self, line):
-        """ Helper function to log an error message with a descriptive heading. 
-        Args:
-            line (str): Message to be logged.
-        """
-        logging.error("Chase Logger - %s" % line)
+        logging.info("Chase Logger - Stopped Telemetry Logger Thread.")
